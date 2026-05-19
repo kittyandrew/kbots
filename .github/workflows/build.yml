@@ -22,8 +22,6 @@ jobs:
 
       - uses: DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
 
-      - uses: DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4
-
       - name: GitHub Actions lint (actionlint)
         run: nix shell nixpkgs#actionlint -c actionlint
 
@@ -58,8 +56,6 @@ jobs:
           persist-credentials: false
 
       - uses: DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
-
-      - uses: DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4
 
       - name: Setup Attic cache
         uses: ryanccn/attic-action@5635a15ef0c5462194ffbd05d1daeddc74625c3a
