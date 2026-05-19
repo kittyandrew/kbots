@@ -23,7 +23,7 @@ python -m vtraty_pes_bot --config config.ini
 ### Nix
 
 ```bash
-# Dev shell (provides black, isort, poetry, wkhtmltopdf, ffmpeg)
+# Dev shell (provides ruff, mypy, actionlint, zizmor, poetry, wkhtmltopdf, ffmpeg)
 nix develop
 
 # Build

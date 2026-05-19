@@ -1,21 +1,41 @@
-name: CI
+name: ci
+
+# Code-quality gates. Runs on every PR and every push to master.
+# Nix evaluation, package build, Docker image build, and Attic cache push live
+# in build.yml, master-branch only, so the Attic push token is never exposed to
+# fork-PR contexts.
 
 on:
   push:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
+    name: format + lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
-      - uses: cachix/install-nix-action@v30
+      - uses: DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
 
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - uses: DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4
 
-      - uses: nicknovitski/nix-develop@v1
+      - uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a
+
+      - name: GitHub Actions lint (actionlint)
+        run: actionlint
+
+      - name: GitHub Actions security audit (zizmor)
+        run: zizmor .github/workflows
+
+      - name: Poetry metadata
+        run: poetry check
 
       - name: Nix format (alejandra)
         run: alejandra -c .
@@ -26,11 +46,11 @@ jobs:
         # even though we don't use it.
         run: nix shell nixpkgs#deadnix -c deadnix --no-lambda-arg flake.nix default.nix
 
-      - name: Python format (black)
-        run: black --check --line-length=131 src/
+      - name: Python format (ruff)
+        run: ruff format --check src
 
-      - name: Python imports (isort)
-        run: isort --check --line-length=131 src/
+      - name: Python lint (ruff)
+        run: ruff check src
 
-      - name: Build
-        run: nix build .#vtraty-pes-bot
+      - name: Python types (mypy)
+        run: mypy src

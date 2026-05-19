@@ -11,7 +11,7 @@ Telegram bot for tracking military equipment losses from OSINT channels. Reads p
 poetry install
 python -m vtraty_pes_bot --config config.ini
 
-# Nix dev shell (provides black, isort, poetry, wkhtmltopdf, ffmpeg)
+# Nix dev shell (provides ruff, mypy, actionlint, zizmor, poetry, wkhtmltopdf, ffmpeg)
 nix develop
 
 # Nix build & run
@@ -30,24 +30,31 @@ docker-compose up -d
 
 ## Code Formatting & Verification
 
-Line length: **131** for both tools. CI enforces this.
+Line length: **131**. CI enforces this.
 
 **Always run all of these before declaring changes ready:**
 
 ```bash
+# Metadata
+poetry check
+
 # Python
-black --check --line-length=131 src/
-isort --check --line-length=131 src/
+ruff format --check src
+ruff check src
+mypy src
+
+# GitHub Actions
+actionlint
+zizmor .github/workflows
 
 # Nix
 nix shell nixpkgs#alejandra -c alejandra -c .
 # --no-lambda-arg: default.nix's cleanSourceWith filter requires a `type` arg by signature that we don't use.
 nix shell nixpkgs#deadnix -c deadnix --no-lambda-arg flake.nix default.nix
-nix flake check
+nix flake check --all-systems
+nix build .#vtraty-pes-bot
+nix build .#docker-image
 ```
-
-Known noise to ignore:
-- `nix flake check`: `meta.mainProgram` warning from dream2nix — not actionable.
 
 ## Preferences
 
@@ -80,7 +87,7 @@ Dynamically loaded at startup: `__init__.py` imports every `.py` file in the dir
 | `table.py` | **Core module.** Daily scheduled table generation, `/table` command, inline keyboard regeneration callbacks. Key functions: `generate_table()`, `generate_cache_for_date()`, `scheduled_table()` (background task), `convert_counter_into_lines()`. Uses a 6am-to-6am day boundary. Weekly summary generated on Mondays via `asyncio.gather` over 7 days. Callback button data format: `v0\|channel_id\|date\|msg_id1,msg_id2`. |
 | `downloader.py` | Multi-platform shortform video downloader (Instagram, Facebook, YouTube Shorts, TikTok, X/Twitter, FunnyJunk). Uses yt-dlp. Validates URLs against `MATCH_RULES`, downloads video + thumbnail, posts with attribution. FunnyJunk uses `match_subdomains` for CDN domains and `ffprobe` fallback for video metadata. |
 | `gatekeep.py` | New-user gatekeeper for a target chat. Sends join message, estimates account age via polynomial interpolation on historical Telegram ID data ("guesstimator"), reports user info to owner, auto-kicks after 10min if user doesn't post. |
-| `watermark.py` | `/watermark` command — overlays a bouncing logo on videos (OpenCV frame-by-frame + moviepy for audio) or a centered logo on images. Restricted to configured user IDs. |
+| `watermark.py` | `/watermark` command — overlays a bouncing logo on videos (OpenCV frame-by-frame + ffmpeg for audio) or a centered logo on images. Restricted to configured user IDs. |
 
 ### Build & Packaging
 
@@ -97,7 +104,8 @@ Dynamically loaded at startup: `__init__.py` imports every `.py` file in the dir
 
 | File | Trigger | What it does |
 |------|---------|-------------|
-| `ci.yml` | Push to master, PRs | Nix format (alejandra), Nix lint (deadnix --no-lambda-arg), Python format (black), import order (isort), `nix build` |
+| `ci.yml` | Push to master, PRs | actionlint, zizmor, Poetry metadata, Nix format/lint, Ruff format/lint, mypy |
+| `build.yml` | Push to master | Token-free quality gates, then Attic cache setup, `nix flake check --all-systems`, package build, Docker image build |
 
 ### Config & Data
 
@@ -149,7 +157,7 @@ The "day" runs **6:00 AM to 6:00 AM** in the configured timezone (typically `Eur
 - **telethon** + **telethon-tgcrypto**: Telegram MTProto client
 - **langchain-openai**: LLM structured output (ChatOpenAI)
 - **yt-dlp** + **bgutil-ytdlp-pot-provider**: video downloading
-- **opencv-python** + **moviepy**: video/image watermarking
+- **opencv-python** + **ffmpeg**: video/image watermarking
 - **imgkit**: HTML→image (requires wkhtmltopdf binary)
 - **pytz**: timezone handling (not stdlib zoneinfo — uses `normalize()` for DST)
 - **aiocache**: TTL caching for callback rate limiting and channel admin lookups

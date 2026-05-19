@@ -24,6 +24,7 @@ in {
           (lib.hasSuffix "flake.lock" name)
         ]);
     };
+    meta.mainProgram = "vtraty-pes-bot";
   };
 
   buildPythonPackage = {

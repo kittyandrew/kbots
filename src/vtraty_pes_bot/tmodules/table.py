@@ -21,7 +21,9 @@ from ..gsheets import get_gsheet_prompt, get_vehicle_types
 from ..llm import Item, parse_messages
 from ..template import template as table_html_template
 
-init_counter = lambda: defaultdict(lambda: {"count": 0, "old": 0, "damaged": 0, "destroyed": 0, "captured": 0})
+
+def init_counter():
+    return defaultdict(lambda: {"count": 0, "old": 0, "damaged": 0, "destroyed": 0, "captured": 0})
 
 
 def get_time_range(tz):

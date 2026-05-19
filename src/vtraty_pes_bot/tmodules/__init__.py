@@ -9,7 +9,7 @@ async def init(**context):
         context,
         modules=[
             # Dynamically import
-            importlib.import_module(f".", f"{__name__}.{file[:-3]}")
+            importlib.import_module(".", f"{__name__}.{file[:-3]}")
             # All the files in the current directory
             for file in os.listdir(os.path.dirname(__file__))
             # If they start with a letter and are Python files
@@ -25,5 +25,5 @@ async def start_modules(context, modules):
         if callable(p_init):
             try:
                 await p_init(**context)
-            except Exception as e:
+            except Exception:
                 context["logger"].exception("Failed to load '%s'!", module.__name__)

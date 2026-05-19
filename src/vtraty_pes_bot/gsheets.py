@@ -66,5 +66,5 @@ async def get_vehicle_types(spreadsheet_id, api_key, logger, sheet_name="table")
     # duplicate entries (especially after normalization), which would crash Python's Enum constructor.
     type_strings = list(dict.fromkeys(type_strings))
     if "UNKNOWN" in type_strings:
-        return CustomEnum("VehicleTypes", type_strings)
-    return CustomEnum("VehicleTypes", type_strings + ["UNKNOWN"])
+        return Enum("VehicleTypes", type_strings, type=CustomEnum)
+    return Enum("VehicleTypes", type_strings + ["UNKNOWN"], type=CustomEnum)

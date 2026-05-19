@@ -1,12 +1,13 @@
-import asyncio
 import logging
+import subprocess
 import tempfile
 from pathlib import Path
-from typing import Union
+from typing import Any, Union, cast
 
-import cv2
-from moviepy import CompositeAudioClip, VideoFileClip
+import cv2 as cv2_untyped
 from telethon import events
+
+cv2 = cast(Any, cv2_untyped)
 
 
 def watermark_video(
@@ -84,18 +85,33 @@ def watermark_video(
     out.release()
     logger.info("Done with processing video '%s' ('%s')! Cloning audio...", fp_in, fp_out)
 
-    in_video = VideoFileClip(fp_in)
-    out_video = VideoFileClip(fp_out_intermediate)
-    try:
-        if in_video.audio:
-            out_video = out_video.with_audio(CompositeAudioClip([in_video.audio]))
-            logger.info("Done processing audio for video '%s' ('%s')! Finished.", fp_in, fp_out)
-        else:
-            logger.info("No audio detected! Finished '%s' ('%s').", fp_in, fp_out)
-        out_video.write_videofile(fp_out)
-    finally:
-        out_video.close()
-        in_video.close()
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            fp_out_intermediate,
+            "-i",
+            fp_in,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a?",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            fp_out,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.error("Failed to clone audio with ffmpeg: %s", result.stderr)
+        raise RuntimeError("ffmpeg failed while cloning audio into watermarked video")
+
+    logger.info("Done processing audio for video '%s' ('%s')! Finished.", fp_in, fp_out)
     return fp_out
 
 

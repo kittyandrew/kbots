@@ -8,7 +8,7 @@
     dream2nix,
     ...
   }: let
-    systems = ["x86_64-linux" "aarch64-linux"];
+    systems = ["x86_64-linux"];
     forEachSystem = fn:
       nixpkgs.lib.genAttrs systems (system:
         fn {
@@ -43,7 +43,7 @@
         };
         config = {
           WorkingDir = "/usr/src/app";
-          Entrypoint = ["${pkgs.lib.getExe py-vtraty-pes-bot}"];
+          Entrypoint = ["${pkgs.lib.getExe' py-vtraty-pes-bot "vtraty-pes-bot"}"];
           # @NOTE: SENTRY_DSN is passed at runtime via .env/docker-compose, not baked in.
           #   GIT_SHA requires `--impure` to read the env var at build time (nix is pure by default).
           #   Without --impure, GIT_SHA resolves to "" and release tracking becomes a no-op.
@@ -85,13 +85,14 @@
       default = pkgs.mkShell {
         inputsFrom = [py-vtraty-pes-bot.devShell];
         buildInputs = [
-          py-vtraty-pes-bot.config.deps.python.pkgs.flake8
-          py-vtraty-pes-bot.config.deps.python.pkgs.isort
-          py-vtraty-pes-bot.config.deps.python.pkgs.black
+          py-vtraty-pes-bot.config.deps.python.pkgs.mypy
+          pkgs.actionlint
           pkgs.alejandra
           pkgs.wkhtmltopdf
           pkgs.ffmpeg
           pkgs.poetry
+          pkgs.ruff
+          pkgs.zizmor
         ];
         # Upon installation we need to do additional configurations.
         shellHook = ''

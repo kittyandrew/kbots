@@ -100,6 +100,7 @@ async def download_thumb(info, output_dir: str, logger) -> Optional[Path]:
                     await f.write(await resp.read())
                     logger.info("Attempted to prepare thumbnail for the video: '%s' ...", path)
                     return path
+    return None
 
 
 async def init(client, logger, config, **context):
@@ -133,7 +134,7 @@ async def init(client, logger, config, **context):
                     # and uploader metadata from yt-dlp, so we relax validation and use fallbacks.
                     is_direct = bool(info.get("direct"))
                     if not is_direct:
-                        assert info.get("duration") is not None, f"GIF or livestream... maybe support GIFs?"
+                        assert info.get("duration") is not None, "GIF or livestream... maybe support GIFs?"
                         assert str(info.get("resolution")) != "audio only", "Audio-only (e.g. tiktok presentation), can't process!"
 
                     user = info.get("uploader") or urllib.parse.urlparse(url).hostname.removeprefix("www.")

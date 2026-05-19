@@ -1,7 +1,6 @@
 import asyncio
 import html
 import json
-import logging
 import os
 from datetime import datetime
 from random import randint
@@ -46,7 +45,7 @@ async def init(client, logger, config, **context):
         guesstimator_enabled = True
 
     # Temporary storage that automatically cleans up references over time.
-    kick_tasks = cachetools.TTLCache(maxsize=64, ttl=60 * 15)
+    kick_tasks: cachetools.TTLCache[int, asyncio.Task] = cachetools.TTLCache(maxsize=64, ttl=60 * 15)
 
     logger.info("Initiating gatekeeper ...")
 
