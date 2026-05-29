@@ -52,6 +52,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 
 | File | Purpose |
 |------|---------|
+| `.github/README.md` | Repository overview, setup, run, build, and check commands. |
 | `pyproject.toml` | Root uv workspace and shared ruff/mypy config. |
 | `uv.lock` | Single uv workspace lock file. Update with uv only. |
 | `common/pyproject.toml` | `kbots-common` metadata and setuptools package-dir mapping. |
