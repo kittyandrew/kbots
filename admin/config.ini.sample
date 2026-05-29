@@ -1,0 +1,20 @@
+[general]
+debug = False
+# Account session file path.
+session = bot.session
+# @Required: Chat ID where /purge command works.
+admin_chat =
+
+[telegram]
+# @Required: Telegram API application ID.
+api_id =
+# @Required: Telegram API application hash.
+api_hash =
+
+[repost]
+# @Required: Source channel ID to mirror posts from.
+source_id =
+# @Required: Target channel ID to mirror posts to.
+target_id =
+# Path to the pickle cache file for repost message ID mapping.
+cache_fp = data/repost_cache.pkl

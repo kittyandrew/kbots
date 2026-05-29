@@ -1,7 +1,3 @@
-# @NOTE: This module previously contained TGSpawner with full account creation via SMS activation
-# services (sms-activate.org). That functionality was removed — we only log into existing accounts
-# now. The old code is preserved in git history if ever needed again.
-
 import telethon
 
 
@@ -10,7 +6,7 @@ class BadAccountError(Exception):
 
 
 class TGSpawner:
-    def __init__(self, tg_api_hash: str, tg_api_id: str, path: str, logger=None):
+    def __init__(self, tg_api_hash: str, tg_api_id: int, path: str, logger=None):
         self.tg_api_hash = tg_api_hash
         self.tg_api_id = tg_api_id
         self.path = path
@@ -27,13 +23,14 @@ class TGSpawner:
 
         if not await client.is_user_authorized():
             clean = await client.log_out()
-            assert clean, "Log out is broken!"
+            if not clean:
+                raise RuntimeError("Telegram log_out() returned False; session cleanup failed")
             raise BadAccountError
 
         return client
 
     async def login(self, **kwargs):
-        """Interactive login — prompts for phone/code (or uses bot_token kwarg)."""
+        """Interactive login: prompts for phone/code, or uses bot_token when provided."""
         client = telethon.TelegramClient(
             session=self.path,
             api_hash=self.tg_api_hash,

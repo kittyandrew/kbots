@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Union, cast
 
 import cv2 as cv2_untyped
+import imageio_ffmpeg
 from telethon import events
 
 cv2 = cast(Any, cv2_untyped)
@@ -87,7 +88,7 @@ def watermark_video(
 
     result = subprocess.run(
         [
-            "ffmpeg",
+            imageio_ffmpeg.get_ffmpeg_exe(),
             "-y",
             "-i",
             fp_out_intermediate,

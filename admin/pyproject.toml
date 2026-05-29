@@ -1,0 +1,32 @@
+[project]
+name = "vtraty-admin-bot"
+version = "0.1.0"
+description = "Vtraty admin/repost bot"
+authors = [
+    {name = "kittyandrew", email = "alias.dev@kittymail.me"},
+]
+requires-python = ">=3.13,<4.0"
+dependencies = [
+    "cachetools==7.1.4",
+    "cryptg==0.6.0",
+    "kbots-common",
+    "sentry-sdk==2.61.0",
+    "telethon==1.43.2",
+]
+
+[project.scripts]
+vtraty-admin-bot = "vtraty_admin_bot:main_cli"
+
+[tool.uv.sources]
+kbots-common = { workspace = true }
+
+[build-system]
+requires = ["setuptools==82.0.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vtraty_admin_bot", "vtraty_admin_bot.tmodules"]
+
+[tool.setuptools.package-dir]
+vtraty_admin_bot = "src"
+"vtraty_admin_bot.tmodules" = "src/tmodules"

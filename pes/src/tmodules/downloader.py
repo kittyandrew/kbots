@@ -1,7 +1,5 @@
 import asyncio
 import html
-import json
-import subprocess
 import tempfile
 import urllib.parse
 from datetime import datetime, timezone
@@ -11,6 +9,7 @@ from typing import Optional
 
 import aiofiles
 import aiohttp
+import imageio_ffmpeg
 import sentry_sdk
 import yt_dlp
 from telethon import events
@@ -48,6 +47,7 @@ def validate_url(source: str, rules=MATCH_RULES):
 
 def download_by_url(url: str, output_dir: str):
     yt_dlp_config = {
+        "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe(),
         "outtmpl": str(path := Path(output_dir) / f"{token_urlsafe(16)}.mp4"),
         "progress_hooks": [lambda _: None],
         "format_sort": ["res", "vcodec:avc", "acodec:aac"],
@@ -56,35 +56,24 @@ def download_by_url(url: str, output_dir: str):
         return path, ydl.extract_info(url, download=True)
 
 
-def ffprobe_video(path: Path, logger) -> dict:
-    """Probe a video file for duration, width, and height via ffprobe."""
+def probe_video(path: Path, logger) -> dict:
     try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-select_streams", "v:0", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            logger.warning("ffprobe failed (exit %d) for '%s': %s", result.returncode, path, result.stderr)
+        import cv2 as cv2_untyped
+
+        cap = cv2_untyped.VideoCapture(str(path))
+        if not cap.isOpened():
             return {}
-        streams = json.loads(result.stdout).get("streams", [])
-        if not streams:
-            return {}
-        s = streams[0]
-        out = {}
-        if "width" in s and "height" in s:
-            out["width"] = int(s["width"])
-            out["height"] = int(s["height"])
-        if "duration" in s:
-            out["duration"] = round(float(s["duration"]))
-        elif "tags" in s and "DURATION" in s["tags"]:
-            # @NOTE: Some containers store duration in tags as HH:MM:SS.microseconds.
-            parts = s["tags"]["DURATION"].split(":")
-            out["duration"] = round(float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2]))
+        fps = cap.get(cv2_untyped.CAP_PROP_FPS)
+        frame_count = cap.get(cv2_untyped.CAP_PROP_FRAME_COUNT)
+        out = {
+            "width": int(cap.get(cv2_untyped.CAP_PROP_FRAME_WIDTH)),
+            "height": int(cap.get(cv2_untyped.CAP_PROP_FRAME_HEIGHT)),
+        }
+        if fps and frame_count:
+            out["duration"] = round(frame_count / fps)
         return out
     except Exception:
-        logger.exception("ffprobe_video failed for '%s'", path)
+        logger.exception("probe_video failed for '%s'", path)
         return {}
 
 
@@ -170,8 +159,8 @@ async def init(client, logger, config, **context):
 
                     duration, width, height = info.get("duration"), info.get("width"), info.get("height")
                     if not (duration and width and height):
-                        sentry_sdk.add_breadcrumb(category="downloader", message="Falling back to ffprobe for video metadata")
-                        probe = await asyncio.to_thread(ffprobe_video, fp, logger)
+                        sentry_sdk.add_breadcrumb(category="downloader", message="Falling back to OpenCV for video metadata")
+                        probe = await asyncio.to_thread(probe_video, fp, logger)
                         duration = duration or probe.get("duration")
                         width = width or probe.get("width")
                         height = height or probe.get("height")

@@ -2,6 +2,12 @@
 /data
 # Cache
 __pycache__
+.mypy_cache
+.ruff_cache
+.venv
+dist
+build
+*.egg-info
 
 config.ini
 .env

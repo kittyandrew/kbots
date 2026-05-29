@@ -2,20 +2,15 @@ import importlib
 import os
 
 
-async def init(**context):
+async def init_modules(package_name: str, package_file: str, **context):
     context["logger"].debug("Loading and initializing telegram modules ...")
 
-    await start_modules(
-        context,
-        modules=[
-            # Dynamically import
-            importlib.import_module(".", f"{__name__}.{file[:-3]}")
-            # All the files in the current directory
-            for file in os.listdir(os.path.dirname(__file__))
-            # If they start with a letter and are Python files
-            if file[0].isalpha() and file.endswith(".py")
-        ],
-    )
+    modules = [
+        importlib.import_module(".", f"{package_name}.{file[:-3]}")
+        for file in os.listdir(os.path.dirname(package_file))
+        if file[0].isalpha() and file.endswith(".py")
+    ]
+    await start_modules(context, modules)
 
 
 async def start_modules(context, modules):

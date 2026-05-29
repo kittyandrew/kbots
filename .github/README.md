@@ -1,49 +1,43 @@
-# vtraty-pes-bot
+# kbots
 
-Telegram bot for a military equipment losses tracking community. Core feature is automated daily and weekly summary tables — the bot reads an OSINT source channel covering the Russia-Ukraine war, uses an LLM to extract equipment names, types, ownership, and status from posts, then renders categorized loss tables as images and posts them to the group.
+uv/Nix monorepo for Vtraty Telegram bots.
 
-Also serves as a general-purpose group utility bot:
-- **Video downloader** — reposts shortform videos from Instagram, TikTok, YouTube Shorts, Facebook, and X/Twitter with attribution
-- **Watermarking** — overlays a bouncing logo on videos or a centered logo on images
-- **Gatekeeping** — greets new members, estimates account age, auto-kicks if they don't post within 10 minutes
+Packages:
+
+- `pes/` — equipment-loss table bot, shortform downloader, gatekeeper, and watermark command.
+- `admin/` — admin/repost bot with purge and source-to-target mirroring modules.
+- `common/` — shared Telegram runtime, login/session handling, Sentry setup, and tmodule loading.
 
 ## Setup
 
 ```bash
-cp config.ini.sample config.ini  # Edit with your credentials
+cp pes/config.ini.sample pes/config.ini
+cp admin/config.ini.sample admin/config.ini
 ```
 
-### Poetry (local dev)
+### uv
 
 ```bash
-poetry install
-python -m vtraty_pes_bot --config config.ini
+nix develop --command uv sync --frozen --all-packages
+nix develop --command uv run vtraty-pes-bot --config pes/config.ini
+nix develop --command uv run vtraty-admin-bot --config admin/config.ini
 ```
 
 ### Nix
 
 ```bash
-# Dev shell (provides ruff, mypy, actionlint, zizmor, poetry, wkhtmltopdf, ffmpeg)
 nix develop
 
-# Build
-nix build .#vtraty-pes-bot
-
-# Regenerate lock after dependency changes
-nix run .#vtraty-pes-bot.lock
-```
-
-### Docker (Nix-built image)
-
-```bash
-nix build .#docker-image && docker load < ./result
-docker-compose up -d
+nix build .#pes
+nix build .#admin
+nix run .#pes -- --help
+nix run .#admin -- --help
+nix build .#pes-image && docker load < ./result
+nix build .#admin-image && docker load < ./result
 ```
 
 ## Configuration
 
-See [`config.ini.sample`](../config.ini.sample) for all options. Requires:
-- Telegram API credentials (`api_id`, `api_hash`)
-- A bot account session and a user account session (user account reads channel history that bots can't access)
-- OpenAI API key (via `.env`)
-- Google Sheets API key (for vehicle reference data and type categorization)
+See [`pes/config.ini.sample`](../pes/config.ini.sample) and [`admin/config.ini.sample`](../admin/config.ini.sample) for all options.
+
+PES requires Telegram API credentials, a bot session, a user session, OpenAI API key, and Google Sheets API key. Admin requires Telegram API credentials and source/target channel IDs.

@@ -1,0 +1,23 @@
+[project]
+name = "kbots-common"
+version = "0.1.0"
+description = "Shared runtime helpers for kbots Telegram bots"
+authors = [
+    {name = "kittyandrew", email = "alias.dev@kittymail.me"},
+]
+requires-python = ">=3.13,<4.0"
+dependencies = [
+    "cryptg==0.6.0",
+    "sentry-sdk==2.61.0",
+    "telethon==1.43.2",
+]
+
+[build-system]
+requires = ["setuptools==82.0.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["kbots_common"]
+
+[tool.setuptools.package-dir]
+kbots_common = "src"

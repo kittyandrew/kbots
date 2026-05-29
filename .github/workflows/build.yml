@@ -1,20 +1,22 @@
-name: build
+name: ci
 
-# Master-branch only: full Nix pipeline plus Attic cache push. Quality gates
-# run in a separate token-free job first; the Attic push token is only exposed
-# after those gates pass.
+# Quality gates, Nix package/image builds, and Attic cache push run only for
+# main pushes. The Attic push token is exposed only after quality passes.
 
 on:
   push:
-    branches: [master]
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   quality:
-    name: quality gates
+    name: quality checks
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON_DOWNLOADS: never
+      UV_PYTHON_PREFERENCE: only-system
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -23,33 +25,40 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
 
       - name: GitHub Actions lint (actionlint)
-        run: nix shell nixpkgs#actionlint -c actionlint
+        run: nix develop --command actionlint
 
       - name: GitHub Actions security audit (zizmor)
-        run: nix shell nixpkgs#zizmor -c zizmor .github/workflows
+        run: nix develop --command zizmor .github/workflows
 
-      - name: Poetry metadata
-        run: nix develop --command poetry check
+      - name: uv lock freshness
+        run: nix develop --command uv lock --check
+
+      - name: uv workspace sync
+        run: nix develop --command uv sync --frozen --all-packages
 
       - name: Nix format (alejandra)
         run: nix develop --command alejandra -c .
 
       - name: Nix lint (deadnix)
-        run: nix shell nixpkgs#deadnix -c deadnix --no-lambda-arg flake.nix default.nix
+        run: nix develop --command deadnix flake.nix
+
+      - name: Flake check
+        run: nix flake check --all-systems
 
       - name: Python format (ruff)
-        run: nix develop --command ruff format --check src
+        run: nix develop --command ruff format --check admin common pes
 
       - name: Python lint (ruff)
-        run: nix develop --command ruff check src
+        run: nix develop --command ruff check admin common pes
 
       - name: Python types (mypy)
-        run: nix develop --command mypy src
+        run: nix develop --command uv run mypy admin/src common/src pes/src
 
   nix:
     name: nix check + build + push
     runs-on: ubuntu-latest
     needs: quality
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -64,11 +73,8 @@ jobs:
           cache: general
           token: ${{ secrets.ATTIC_GENERAL_PUSH_TOKEN }}
 
-      - name: Flake check
-        run: nix flake check --all-systems
+      - name: Build packages
+        run: nix build .#admin .#pes --no-link
 
-      - name: Build package
-        run: nix build .#vtraty-pes-bot
-
-      - name: Build Docker image
-        run: nix build .#docker-image
+      - name: Build Docker images
+        run: nix build .#admin-image .#pes-image --no-link

@@ -1,0 +1,47 @@
+[project]
+name = "vtraty-pes-bot"
+version = "0.1.0"
+description = "Vtraty utility bot"
+authors = [
+    {name = "kittyandrew", email = "alias.dev@kittymail.me"},
+]
+requires-python = ">=3.13,<4.0"
+dependencies = [
+    "aiocache==0.12.3",
+    "aiofiles==25.1.0",
+    "aiohttp==3.13.5",
+    "bgutil-ytdlp-pot-provider==1.3.1",
+    "cachetools==7.1.4",
+    "cryptg==0.6.0",
+    "imageio-ffmpeg==0.6.0",
+    "imgkit==1.2.3",
+    "jinja2==3.1.6",
+    "kbots-common",
+    "langchain-core==1.4.0",
+    "langchain-openai==1.2.2",
+    "markupsafe==3.0.3",
+    "numpy==2.4.6",
+    "opencv-python-headless==4.13.0.92",
+    "pydantic==2.13.4",
+    "pytz==2026.2",
+    "sentry-sdk==2.61.0",
+    "telethon==1.43.2",
+    "yt-dlp==2026.3.17",
+]
+
+[project.scripts]
+vtraty-pes-bot = "vtraty_pes_bot:main_cli"
+
+[tool.uv.sources]
+kbots-common = { workspace = true }
+
+[build-system]
+requires = ["setuptools==82.0.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vtraty_pes_bot", "vtraty_pes_bot.tmodules"]
+
+[tool.setuptools.package-dir]
+vtraty_pes_bot = "src"
+"vtraty_pes_bot.tmodules" = "src/tmodules"

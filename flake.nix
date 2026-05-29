@@ -1,107 +1,135 @@
 {
+  description = "Telegram bots for Vtraty";
+
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    dream2nix.url = "github:nix-community/dream2nix";
+
+    pyproject-nix = {
+      url = "github:pyproject-nix/pyproject.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    uv2nix = {
+      url = "github:pyproject-nix/uv2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+    };
+
+    pyproject-build-systems = {
+      url = "github:pyproject-nix/build-system-pkgs";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.uv2nix.follows = "uv2nix";
+    };
   };
   outputs = {
+    self,
     nixpkgs,
-    dream2nix,
+    pyproject-nix,
+    uv2nix,
+    pyproject-build-systems,
     ...
   }: let
+    inherit (nixpkgs) lib;
     systems = ["x86_64-linux"];
     forEachSystem = fn:
-      nixpkgs.lib.genAttrs systems (system:
+      lib.genAttrs systems (system:
         fn {
+          inherit system;
           pkgs = nixpkgs.legacyPackages.${system};
         });
+
+    workspace = uv2nix.lib.workspace.loadWorkspace {workspaceRoot = ./.;};
+    editableOverlay = workspace.mkEditablePyprojectOverlay {root = "$REPO_ROOT";};
+    revision = self.rev or self.dirtyRev or "dirty";
+    created = "1970-01-01T00:00:01Z";
+    user = "65532:65532";
+    shared = import ./nix/shared {
+      inherit lib pyproject-build-systems pyproject-nix workspace created revision user;
+    };
+    inherit (shared) mkEnv mkImage mkPythonSet mkWkhtmltox;
+
+    pythonSets = forEachSystem ({pkgs, ...}: {
+      admin = mkPythonSet pkgs {vtraty-admin-bot = [];};
+      dev = mkPythonSet pkgs workspace.deps.all;
+      pes = mkPythonSet pkgs {vtraty-pes-bot = [];};
+    });
   in {
-    packages = forEachSystem ({pkgs}: let
-      py-vtraty-pes-bot = dream2nix.lib.evalModules {
-        packageSets.nixpkgs = pkgs;
-        modules = [
-          ./default.nix
-          {
-            paths.projectRoot = ./.;
-            paths.projectRootFile = "flake.nix";
-            paths.package = ./.;
-          }
-        ];
-      };
+    packages = forEachSystem ({
+      pkgs,
+      system,
+    }: let
+      pythonSet = pythonSets.${system}.pes;
+      adminPythonSet = pythonSets.${system}.admin;
+      pes = mkEnv pythonSet "pes-env" {vtraty-pes-bot = [];} "vtraty-pes-bot";
+      admin = mkEnv adminPythonSet "admin-env" {vtraty-admin-bot = [];} "vtraty-admin-bot";
+      wkhtmltox = mkWkhtmltox pkgs;
     in {
-      vtraty-pes-bot = py-vtraty-pes-bot;
-      docker-image = pkgs.dockerTools.buildImage {
-        name = "vtraty-pes-bot";
-        tag = "latest";
-        copyToRoot = pkgs.buildEnv {
-          name = "image-root";
-          paths = [
-            pkgs.wkhtmltopdf
-            pkgs.which # imgkit depends on this to find wkhtmltoimage ...
-            pkgs.ffmpeg
-          ];
-          pathsToLink = ["/bin"];
-        };
-        config = {
-          WorkingDir = "/usr/src/app";
-          Entrypoint = ["${pkgs.lib.getExe' py-vtraty-pes-bot "vtraty-pes-bot"}"];
-          # @NOTE: SENTRY_DSN is passed at runtime via .env/docker-compose, not baked in.
-          #   GIT_SHA requires `--impure` to read the env var at build time (nix is pure by default).
-          #   Without --impure, GIT_SHA resolves to "" and release tracking becomes a no-op.
-          Env = [
-            "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-            "TMPDIR=/tmp"
-            "SENTRY_ENVIRONMENT=production"
-            "GIT_SHA=${builtins.getEnv "GIT_SHA"}"
-          ];
-        };
-        # @NOTE: Created dirs here are not actually `/tmp`, but `tmp`, because we are creating
-        #  a dir "in some nix sandbox", which only later will become docker image root (`/`).
-        extraCommands = ''
-          mkdir -m 0777 tmp  # creating /tmp since seemingly `wkhtmltoimage` requires it.
-          mkdir -m 0777 .cache  # creating /.cache since seemingly `wkhtmltoimage` requires it.
-        '';
-      };
+      inherit pes admin;
+      default = pes;
+
+      pes-image =
+        mkImage pkgs "vtraty-pes-bot" pes "vtraty-pes-bot" [
+          pkgs.freefont_ttf
+          pkgs.which
+          wkhtmltox
+        ] [
+          "FONTCONFIG_FILE=${wkhtmltox.fontconfig.out}/etc/fonts/fonts.conf"
+        ];
+      admin-image = mkImage pkgs "vtraty-admin-bot" admin "vtraty-admin-bot" [] [];
     });
 
-    devShells = forEachSystem ({pkgs}: let
-      libs = with pkgs; [
-        stdenv.cc.cc
-        zlib
-        glib
-        libGL
-      ];
-      py-vtraty-pes-bot = dream2nix.lib.evalModules {
-        packageSets.nixpkgs = pkgs;
-        modules = [
-          ./default.nix
-          {
-            paths.projectRoot = ./.;
-            paths.projectRootFile = "flake.nix";
-            paths.package = ./.;
-          }
-        ];
+    apps = forEachSystem ({system, ...}: let
+      packages = self.packages.${system};
+    in {
+      pes = {
+        type = "app";
+        program = "${lib.getExe' packages.pes "vtraty-pes-bot"}";
+      };
+      admin = {
+        type = "app";
+        program = "${lib.getExe' packages.admin "vtraty-admin-bot"}";
+      };
+      default = self.apps.${system}.pes;
+    });
+
+    devShells = forEachSystem ({
+      pkgs,
+      system,
+    }: let
+      pythonSet = pythonSets.${system}.dev.overrideScope editableOverlay;
+      virtualenv = pythonSet.mkVirtualEnv "kbots-dev-env" {
+        vtraty-admin-bot = [];
+        vtraty-pes-bot = [];
       };
     in {
       default = pkgs.mkShell {
-        inputsFrom = [py-vtraty-pes-bot.devShell];
-        buildInputs = [
-          py-vtraty-pes-bot.config.deps.python.pkgs.mypy
+        packages = [
+          virtualenv
           pkgs.actionlint
           pkgs.alejandra
-          pkgs.wkhtmltopdf
+          pkgs.deadnix
           pkgs.ffmpeg
-          pkgs.poetry
+          pkgs.mypy
           pkgs.ruff
+          pkgs.uv
+          pkgs.wkhtmltopdf
           pkgs.zizmor
         ];
-        # Upon installation we need to do additional configurations.
+        env = {
+          UV_NO_SYNC = "1";
+          UV_PYTHON = pythonSet.python.interpreter;
+          UV_PYTHON_DOWNLOADS = "never";
+        };
         shellHook = ''
-          # Some python packages do RUNTIME DL loading from the provided paths, sigh.
-          export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath libs}
+          unset PYTHONPATH
+          export REPO_ROOT=$(git rev-parse --show-toplevel)
 
           echo -e "\nWelcome to the shell :)\n"
         '';
       };
     });
+
+    formatter = forEachSystem ({pkgs, ...}: pkgs.alejandra);
   };
 }

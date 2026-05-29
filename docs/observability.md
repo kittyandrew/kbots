@@ -10,24 +10,21 @@ Error reporting, performance traces, and breadcrumbs via [Sentry](https://de.sen
 
 | Variable | Purpose | Where set |
 |----------|---------|-----------|
-| `SENTRY_DSN` | Sentry ingest endpoint | `.env` (local), runtime env (deploy). Also in GitHub secrets for future CI use. |
-| `SENTRY_ENVIRONMENT` | `development` / `production` | `.env` (local), baked into Docker image as `production` |
-| `GIT_SHA` | Release identifier for Sentry | Baked into Docker image via `builtins.getEnv` (requires `--impure`) |
+| `SENTRY_DSN` | Sentry ingest endpoint | Runtime env. Unset locally to disable reporting. |
+| `SENTRY_ENVIRONMENT` | `development` / `production` | Runtime env; Nix images default to `production`. |
+| `SENTRY_RELEASE` | Release identifier for Sentry | Runtime env; Nix images default to the flake revision. |
 
 ### Local dev
 
-Values are in `.env` (loaded by docker-compose, or source manually). `SENTRY_ENVIRONMENT=development` prevents local errors from triggering production alerts.
+Use shell env vars when running locally. `SENTRY_ENVIRONMENT=development` prevents local errors from triggering production alerts.
+
+```bash
+SENTRY_ENVIRONMENT=development nix develop --command uv run vtraty-pes-bot --config data/local-dev/pes/config.ini
+```
 
 ### Docker image
 
-`SENTRY_ENVIRONMENT=production` and `GIT_SHA` are baked into the Nix-built image (`flake.nix` → `config.Env`). `SENTRY_DSN` is passed at runtime via `.env`/docker-compose — it is **not** baked in.
-
-Building with release tracking:
-```bash
-GIT_SHA=$(git rev-parse HEAD) nix build .#docker-image --impure
-```
-
-Without `--impure`, `GIT_SHA` resolves to `""` and release tracking is disabled (Sentry still works).
+`SENTRY_ENVIRONMENT=production` and `SENTRY_RELEASE` are set in the Nix-built images (`flake.nix` → `config.Env`). `SENTRY_DSN` is passed at runtime; it is **not** baked in.
 
 ## What's instrumented
 
@@ -36,7 +33,7 @@ Without `--impure`, `GIT_SHA` resolves to `""` and release tracking is disabled 
 `sentry_sdk.init()` runs once at startup in `_main()`, after logging setup. Configures:
 - `traces_sample_rate=1.0` (all transactions traced)
 - `environment` fallback chain: `SENTRY_ENVIRONMENT` → `HOSTNAME` → `platform.node()`
-- `release` from `GIT_SHA` env var, falls back to `"dev"` when unset or empty
+- `release` from `SENTRY_RELEASE`, then `GIT_SHA`, then `"dev"`
 
 ### Breadcrumbs
 
