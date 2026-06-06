@@ -6,12 +6,57 @@ import platform
 import sys
 from collections.abc import Awaitable, Callable
 from configparser import ConfigParser
+from dataclasses import dataclass
+from functools import cached_property
 
 import sentry_sdk
-
-from .new_account import BadAccountError, TGSpawner
+import telethon
 
 ModuleInit = Callable[..., Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class TelegramAccount:
+    api_hash: str
+    api_id: int
+    session_path: str
+
+    @classmethod
+    def from_config(cls, config: ConfigParser, *, session_key: str):
+        return cls(
+            api_hash=config.get("telegram", "api_hash").strip(),
+            api_id=config.getint("telegram", "api_id"),
+            session_path=config.get("general", session_key).strip(),
+        )
+
+    def __post_init__(self):
+        if not self.api_hash:
+            raise ValueError("telegram.api_hash must not be empty")
+        if self.api_id <= 0:
+            raise ValueError("telegram.api_id must be positive")
+        if not self.session_path:
+            raise ValueError("telegram session path must not be empty")
+
+    @cached_property
+    def client(self):
+        return telethon.TelegramClient(session=self.session_path, api_hash=self.api_hash, api_id=self.api_id)
+
+    async def load(self):
+        """Load an existing session file and verify the account is authorized."""
+        await self.client.connect()
+
+        if await self.client.is_user_authorized():
+            return self.client
+
+        clean = await self.client.log_out()
+        if not clean:
+            raise RuntimeError("Telegram log_out() returned False; session cleanup failed")
+        return None
+
+    async def login(self, *, bot_token: str | None = None):
+        """Interactive login: prompts for phone/code, or uses bot_token when provided."""
+        await self.client.start(bot_token=bot_token)
+        return self.client
 
 
 def run_bot(
@@ -50,46 +95,39 @@ def run_bot(
         context = dict(logger=logger, config=config)
         context["storage"] = context
 
-        api_hash = config.get("telegram", "api_hash")
-        api_id = config.getint("telegram", "api_id")
-
-        session_path = config.get("general", "session")
-        spawner = TGSpawner(tg_api_hash=api_hash, tg_api_id=api_id, path=session_path, logger=logger)
+        bot_token = config.get("telegram", "token", fallback=None) if login and bot_login_uses_token else None
+        account = TelegramAccount.from_config(config, session_key="session")
 
         if login:
-            login_kwargs = {}
-            if bot_login_uses_token:
-                login_kwargs["bot_token"] = config.get("telegram", "token", fallback=None)
-            await spawner.login(**login_kwargs)
+            await account.login(bot_token=bot_token)
             return
 
-        if not os.path.exists(session_path):
-            print(f"Session file '{session_path}' is missing!")
+        if not os.path.exists(account.session_path):
+            print(f"Session file '{account.session_path}' is missing!")
             sys.exit(1)
 
-        try:
-            context["client"] = await spawner.load_account()
-        except BadAccountError:
-            print(f"Session '{session_path}' is expired or invalid. Re-run with --login to authenticate.")
+        client = await account.load()
+        if client is None:
+            print(f"Session '{account.session_path}' is expired or invalid. Re-run with --login to authenticate.")
             sys.exit(1)
+        context["client"] = client
 
         if needs_user:
-            user_session_path = config.get("general", "user_session")
-            user_spawner = TGSpawner(tg_api_hash=api_hash, tg_api_id=api_id, path=user_session_path, logger=logger)
+            user_account = TelegramAccount.from_config(config, session_key="user_session")
 
             if user_login:
-                await user_spawner.login()
+                await user_account.login()
                 return
 
-            if not os.path.exists(user_session_path):
-                print(f"Session file '{user_session_path}' is missing!")
+            if not os.path.exists(user_account.session_path):
+                print(f"Session file '{user_account.session_path}' is missing!")
                 sys.exit(1)
 
-            try:
-                context["user"] = await user_spawner.load_account()
-            except BadAccountError:
-                print(f"Session '{user_session_path}' is expired or invalid. Re-run with --user-login to authenticate.")
+            user = await user_account.load()
+            if user is None:
+                print(f"Session '{user_account.session_path}' is expired or invalid. Re-run with --user-login to authenticate.")
                 sys.exit(1)
+            context["user"] = user
 
         await module_init(**context)
         logger.info("Initiation completed ...")

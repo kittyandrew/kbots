@@ -7,9 +7,8 @@ When adding, removing, or renaming files, update this map in the same staged cha
 
 | File | Purpose |
 |------|---------|
-| `__init__.py` | Public exports for `kbots_common`. |
-| `main.py` | Shared CLI parser and bot runner. Sets logging, Sentry, Telegram sessions, module context, and event loop lifecycle. |
-| `new_account.py` | `TGSpawner` and `BadAccountError` for Telegram session loading and interactive login. |
+| `__init__.py` | Public `kbots_common` exports for the shared CLI and runner. |
+| `main.py` | Shared CLI parser, bot runner, Telegram session loading, interactive login, module context, and event loop lifecycle. |
 | `tmodules.py` | Dynamic tmodule discovery and `init(**context)` dispatch. |
 
 ## PES Bot: `pes/src/`
