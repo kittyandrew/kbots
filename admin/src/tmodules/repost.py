@@ -88,13 +88,23 @@ async def init(client, logger, config, **context):
                 double_event_bug_cache[event.messages[0].id] = True
 
             files = [e.media for e in event.messages]
-            event.messages[0].text = (event.messages[0].text or "") + "\n\n" + source_addr + str(event.messages[0].id)
+            # @NOTE: Only the album's caption-bearing message gets the source link; text-less images must
+            # stay caption-less. Telegram shows at most one album caption, so forcing a caption onto every
+            # image (which happens when Telegram splits the album into per-message events) makes it hide
+            # them all. Source from .message (raw text) so existing entity offsets stay valid. The caption
+            # text is recovered from whichever message carries it; the backlink anchors to messages[0].id
+            # (the album's deep-link target) regardless.
+            caption_msg = next((m for m in event.messages if m.message), None)
+            text = entities = None
+            if caption_msg is not None:
+                text = f"{caption_msg.message}\n\n{source_addr}{event.messages[0].id}"
+                entities = caption_msg.entities or None
             async with send_lock:
                 results = await client.send_message(
                     target_id,
-                    event.messages[0].text,
+                    text,
                     file=files,
-                    formatting_entities=event.messages[0].entities,
+                    formatting_entities=entities,
                     **DEFAULTS,
                 )
             if not isinstance(results, list):
@@ -123,7 +133,11 @@ async def init(client, logger, config, **context):
                     return
                 double_event_bug_cache[event.id] = True
 
-            event.message.text = (event.message.text or "") + "\n\n" + source_addr + str(event.id)
+            # @NOTE: Only append the link when the message actually has text; a caption-less media message
+            # must stay caption-less. Mutate .message (raw text) directly so entity offsets stay valid and
+            # Telethon does not re-parse markdown.
+            if event.message.message:
+                event.message.message += f"\n\n{source_addr}{event.id}"
             async with send_lock:
                 result = await client.send_message(target_id, event.message, **DEFAULTS)
             ttl_cache[event.id] = result.id
@@ -156,18 +170,20 @@ async def init(client, logger, config, **context):
                     await asyncio.sleep(album._HACK_DELAY * 1.25)
 
                 if event.id in ttl_cache:
-                    # @NOTE: Always append link, matching forward handlers. Mutates Telethon's event object
-                    # in place — safe because Telethon creates a new Message instance per event.
-                    event.message.text = (event.message.text or "") + "\n\n" + source_addr + str(event.id)
+                    # @NOTE: Only append the link when the edited message has text, matching the forward
+                    # handlers — a text-less edit must not gain a caption. Use raw .message so entity
+                    # offsets stay valid instead of the markdown-rendered .text.
+                    text = f"{event.message.message}\n\n{source_addr}{event.id}" if event.message.message else ""
+                    entities = event.message.entities or None
 
                     try:
                         async with send_lock:
                             await client.edit_message(
                                 target_id,
                                 ttl_cache[event.id],
-                                event.message.text,
+                                text,
                                 file=event.media,
-                                formatting_entities=event.message.entities,
+                                formatting_entities=entities,
                                 **DEFAULTS,
                             )
                         sentry_sdk.add_breadcrumb(category="repost", message="Message edited", level="info")
