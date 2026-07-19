@@ -97,9 +97,12 @@ async def init(client, logger, config, **context):
 
     @client.on(events.NewMessage(func=lambda e: e.text and e.entities and not (e.is_channel and not e.is_group)))
     async def shortform_video_downloader(event):
-        # if event.file:
-        #     logger.warning("Skipping potential instagram link, cuz its already has file: %s", event)
-        #     return
+        # @NOTE: A link in the caption of a real attachment (video/photo) is attribution for content
+        # already posted — don't re-download it. Telegram's own link previews (MessageMediaWebPage)
+        # don't count: bare-link messages with a preview still need processing.
+        if event.media and not isinstance(event.media, MessageMediaWebPage):
+            logger.info("Skipping message %s: already has an attachment ('%s') ...", event.id, event.file and event.file.name)
+            return
 
         for item in event.entities:
             if not isinstance(item, MessageEntityUrl):
