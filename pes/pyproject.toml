@@ -36,7 +36,7 @@ vtraty-pes-bot = "vtraty_pes_bot:main_cli"
 kbots-common = { workspace = true }
 
 [build-system]
-requires = ["setuptools==82.0.1"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
