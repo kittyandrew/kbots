@@ -59,7 +59,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 | `admin/pyproject.toml` | `vtraty-admin-bot` metadata, dependencies, CLI script, package-dir mapping. |
 | `flake.nix` | Flake inputs/outputs, bot-specific env/image wiring, apps, dev shell. |
 | `nix/shared/default.nix` | Shared Nix helpers for uv2nix sets, virtualenvs, images, and `wkhtmltox`. |
-| `.github/workflows/build.yml` | PR/main quality gates, main-only package/image builds and Attic cache push after quality. |
+| `.github/workflows/build.yml` | PR/main quality gates, main-only package and image builds after quality. |
 | `pes/config.ini.sample` | PES config template. |
 | `admin/config.ini.sample` | Admin config template. |
 | `.env.sample` | Optional local Sentry env vars. |

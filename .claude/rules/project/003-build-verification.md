@@ -63,6 +63,6 @@ nix develop --command zizmor .github/workflows
 
 ## CI Rules
 
-GitHub Actions keep token-free quality gates in a separate job from mainline build/cache work. Keep actions SHA-pinned, `permissions: contents: read`, and `persist-credentials: false` on checkout. The Attic token must stay in a `main`-push-only job that depends on quality.
+GitHub Actions keep quality gates in a separate job from mainline build work. Keep actions SHA-pinned, `permissions: contents: read`, and `persist-credentials: false` on checkout. A job that needs a secret must stay `main`-push-only and depend on quality.
 
-Quality gates run on PRs and main pushes; package/image builds and cache pushes run only on main pushes.
+Quality gates run on PRs and main pushes; package and image builds run only on main pushes.
