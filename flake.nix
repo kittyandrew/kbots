@@ -84,10 +84,12 @@
     in {
       pes = {
         type = "app";
+        meta.description = "Vtraty pes Telegram bot";
         program = "${lib.getExe' packages.pes "vtraty-pes-bot"}";
       };
       admin = {
         type = "app";
+        meta.description = "Admin Telegram bot";
         program = "${lib.getExe' packages.admin "vtraty-admin-bot"}";
       };
       default = self.apps.${system}.pes;
