@@ -69,6 +69,17 @@ def download_by_url(url: str, output_dir: str, platform: str, logger) -> Video:
                 tweet = tweet.get("tweet") or tweet
                 if isinstance(tweet, dict) and tweet.get("rest_id") == media_id:
                     post = tweet
+                    quote = traverse_obj(post, ("quoted_status_result", "result")) or {}
+                    if (quote_id := quote.get("rest_id")) and not ("legacy" in quote and "core" in quote):
+                        try:
+                            fallback = extractor._call_syndication_api(quote_id)  # GraphQL can return only the quote's ID.
+                            if fallback.get("id_str") != quote_id:
+                                raise yt_dlp.utils.ExtractorError("Syndication returned a different quoted post")
+                        except yt_dlp.utils.ExtractorError:
+                            logger.warning("Quoted X post unavailable: %s", quote_id, exc_info=True)
+                        else:
+                            quote.setdefault("legacy", {**fallback, "full_text": fallback.get("text", "")})
+                            quote.setdefault("core", {"user_results": {"result": {"legacy": fallback.get("user", {})}}})
             return response
 
         extractor._call_graphql_api = capture_graphql
