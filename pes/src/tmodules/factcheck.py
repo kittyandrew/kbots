@@ -190,7 +190,7 @@ class Actions:
         return "sent"
 
     async def ignore_user(self, sid: str, payload: dict) -> str:
-        text = " ".join(payload["text"].split())
+        text = payload["text"].strip()  # keep line breaks: a playful warning may carry a tiny ASCII drawing
         if not text or len(text) > MAX_CHARS:
             raise Rejected(f"`text` has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
         chat_id, sender_id, _ = self.claim(sid, payload["trigger_message_id"])
