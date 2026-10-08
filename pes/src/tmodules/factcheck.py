@@ -213,8 +213,9 @@ class Actions:
         tmp = self.strikes_fp.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.strikes, indent=2))
         os.replace(tmp, self.strikes_fp)
-        # Both go to the tagger, never silently: a mute nobody sees reads as a broken bot.
-        await self.send(trigger.chat_id, html.escape(text + (f"\n{MUTE_NOTICE}" if warned else "")), payload["trigger_message_id"])
+        # Both go to the tagger, never silently: a mute nobody sees reads as a broken bot. The ⚠️ marks it as a warning.
+        warning = f"⚠️ {text.removeprefix('⚠️').lstrip()}" + (f"\n{MUTE_NOTICE}" if warned else "")
+        await self.send(trigger.chat_id, html.escape(warning), payload["trigger_message_id"])
         if warned:
             result = "The sender already had a warning: kbots posted your text with a notice that they are ignored for 24 hours."
         else:
