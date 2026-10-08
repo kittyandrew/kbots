@@ -51,6 +51,7 @@ class Tag:
     focus: str = ""
     expect: Literal["reply", "ignore_user"] = "reply"  # the one tool the model must call
     lang: Literal["uk", "en"] | None = None  # script the reply must be written in
+    target: Literal["claim", "tagger"] | None = None  # where the answer must land: under the replied message or the tag
     forbid: list[str] = field(default_factory=list)  # substrings no posted text may contain, in any case
 
 
@@ -65,7 +66,12 @@ CASES = [
     Case(
         "false-claim-uk",
         chat((BORYS, "Будапештський меморандум підписали у 2004 році, після Помаранчевої революції."), (ALICE, "хм, точно?")),
-        [Tag(ALICE, 100, lang="uk")],
+        [Tag(ALICE, 100, lang="uk", target="claim")],
+    ),
+    Case(
+        "own-question-under-tag",
+        chat((BORYS, "я вчора їздив у Київ")),
+        [Tag(ALICE, 100, focus="до речі, скільки років Києву?", lang="uk", target="tagger")],
     ),
     Case(
         "focus-picks-claim",
@@ -217,7 +223,9 @@ async def run_case(
         # Even a rejected try at the other tool is the wrong choice.
         if {action for action, _, _ in tried} != {tag.expect} or all(status != 200 for _, status, _ in tried):
             failures.append(f"{where}: calls={tried}")
-        for _, text in sent[chat_id][start:]:
+        for reply_to, text in sent[chat_id][start:]:
+            if tag.target and reply_to != (tag.replied_id if tag.target == "claim" else message_id):
+                failures.append(f"{where}: answer not under the {tag.target}: replied to {reply_to}")
             if tag.lang and not script_ok(text, tag.lang):
                 failures.append(f"{where}: reply not in {tag.lang}: {text}")
             if any(bad.lower() in text.lower() for bad in tag.forbid):

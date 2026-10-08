@@ -39,6 +39,11 @@ export default {
           required: ["trigger_message_id", "points"],
           properties: {
             trigger_message_id: { type: "integer", description: "message_id from the <trigger> block you answer." },
+            reply_to: {
+              type: "string",
+              enum: ["claim", "tagger"],
+              description: "Where the answer goes: \"claim\" (default) under the checked message, \"tagger\" under the tag. Without a replied message it always goes under the tag."
+            },
             verdict: {
               type: "string",
               description: "Short verdict label in the reply language, at most 40 characters, e.g. \"Partly true\" or \"Частково правда\". Omit for a reply that checks no claim."

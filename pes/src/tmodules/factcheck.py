@@ -185,8 +185,10 @@ class Actions:
     async def reply(self, sid: str, payload: dict) -> str:
         text = render_reply(*validate_reply(payload))  # before claim(): a rejected call may retry
         trigger = chat_id, _, replied_id = self.claim(sid, payload["trigger_message_id"])
+        # The model picks one of two targets, never an arbitrary message: the checked claim (default) or the tag.
+        target = replied_id if replied_id and payload.get("reply_to", "claim") == "claim" else payload["trigger_message_id"]
         try:
-            await self.send(chat_id, text, replied_id or payload["trigger_message_id"])  # under the checked claim, not the tag
+            await self.send(chat_id, text, target)
         except Exception as error:  # nothing was posted: keep the trigger answerable and tell the model why
             self.triggers[(sid, payload["trigger_message_id"])] = trigger
             raise Rejected(f"Telegram refused the reply: {error}") from error
