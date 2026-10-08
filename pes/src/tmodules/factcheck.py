@@ -163,18 +163,18 @@ class Actions:
         self.strikes_fp = strikes_fp
         self.send = send
         self.logger = logger
-        # (session, message) -> (chat, sender). A tool call pops its trigger before it awaits anything, so even
-        # parallel calls answer it once, and the chat comes from opencode's session id, never from model input.
-        # A trigger queued longer than the TTL can no longer be answered; neither can one from before a restart.
-        self.triggers: cachetools.TTLCache[tuple[str, int], tuple[int, int]] = cachetools.TTLCache(maxsize=1024, ttl=6 * 3600)
+        # (session, message) -> (chat, sender, message the answer replies to). A tool call pops its trigger before it
+        # awaits anything, so even parallel calls answer it once, and the chat comes from opencode's session id, never
+        # from model input. A trigger queued longer than the TTL can no longer be answered, nor one from before a restart.
+        self.triggers: cachetools.TTLCache[tuple[str, int], tuple[int, int, int]] = cachetools.TTLCache(1024, ttl=6 * 3600)
         # str(user_id) -> unix time they are ignored until. Present, even at 0, means they were warned once.
         self.strikes: dict[str, float] = json.loads(strikes_fp.read_text()) if strikes_fp.exists() else {}
 
     def is_ignored(self, user_id: int) -> bool:
         return self.strikes.get(str(user_id), 0) > time.time()
 
-    def claim(self, sid: str, message_id: int) -> tuple[int, int]:
-        """Take the trigger this call answers; return its (chat_id, sender_id)."""
+    def claim(self, sid: str, message_id: int) -> tuple[int, int, int]:
+        """Take the trigger this call answers; return its (chat_id, sender_id, answer_to)."""
         if (trigger := self.triggers.pop((sid, message_id), None)) is None:
             raise Rejected(f"No pending trigger {message_id}: it was already answered, or is not a message_id from a <trigger>.")
         if self.is_ignored(trigger[1]):
@@ -183,15 +183,15 @@ class Actions:
 
     async def reply(self, sid: str, payload: dict) -> str:
         text = render_reply(*validate_reply(payload))  # before claim(): a rejected call may retry
-        chat_id, _ = self.claim(sid, payload["trigger_message_id"])
-        await self.send(chat_id, text, payload["trigger_message_id"])
+        chat_id, _, answer_to = self.claim(sid, payload["trigger_message_id"])
+        await self.send(chat_id, text, answer_to)
         return "sent"
 
     async def ignore_user(self, sid: str, payload: dict) -> str:
         text = " ".join(payload["text"].split())
         if not text or len(text) > MAX_CHARS:
             raise Rejected(f"`text` has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
-        chat_id, sender_id = self.claim(sid, payload["trigger_message_id"])
+        chat_id, sender_id, _ = self.claim(sid, payload["trigger_message_id"])
         warned = str(sender_id) in self.strikes
         self.strikes[str(sender_id)] = time.time() + IGNORE_SECONDS if warned else 0
         tmp = self.strikes_fp.with_suffix(".tmp")
@@ -200,7 +200,7 @@ class Actions:
         if warned:
             result = "The sender already had a warning: kbots now ignores them for 24 hours and posted nothing."
         else:
-            await self.send(chat_id, html.escape(text), payload["trigger_message_id"])
+            await self.send(chat_id, html.escape(text), payload["trigger_message_id"])  # the warning goes to the tagger
             result = "Posted your text as a warning reply. The next ignore_user call for this sender silences them."
         self.logger.info("Fact-check: ignore_user on %s in %s: %s", sender_id, chat_id, result)
         return result
@@ -306,7 +306,8 @@ async def init(client, logger, config, **context):
 
         sid = session_id(event.chat_id)
         sentry_sdk.add_breadcrumb(category="factcheck", message=f"Forwarding trigger {msg.id} to {sid}")
-        actions.triggers[(sid, msg.id)] = (event.chat_id, event.sender_id)  # before the prompt, which may run at once
+        # Before the prompt, which may run at once. The answer replies to the checked claim, not to the tag.
+        actions.triggers[(sid, msg.id)] = (event.chat_id, event.sender_id, msg.reply_to_msg_id or msg.id)
         await queue_prompt(opencode, sid, f"Telegram: {chat}", prompt, files)
 
         try:
