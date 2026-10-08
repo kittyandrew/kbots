@@ -16,8 +16,15 @@ select = ["E", "F", "I"]
 ignore = ["E501"]
 
 [tool.mypy]
+# mypy cannot follow the editable installs' import hooks, and the flattened */src layout hides package names, so
+# each workspace package is a symlink here (`mypy -p <name>`). Without it, cross-package imports silently become Any.
+mypy_path = "$MYPY_CONFIG_FILE_DIR/.mypy-path"
 python_version = "3.13"
 ignore_missing_imports = true
 check_untyped_defs = true
 disable_error_code = ["import-untyped"]
 explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["kbots_common", "kbots_common.*", "vtraty_admin_bot", "vtraty_admin_bot.*", "vtraty_pes_bot", "vtraty_pes_bot.*"]
+ignore_missing_imports = false  # a broken .mypy-path link must fail the gate, not turn back into Any

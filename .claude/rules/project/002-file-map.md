@@ -63,6 +63,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 |------|---------|
 | `.github/README.md` | Repository overview, setup, run, build, and check commands. |
 | `pyproject.toml` | Root uv workspace and shared ruff/mypy config. |
+| `.mypy-path/` | Symlinks mapping each workspace package's import name to its `*/src` dir, so mypy resolves cross-package imports. Add one per new package. |
 | `uv.lock` | Single uv workspace lock file. Update with uv only. |
 | `common/pyproject.toml` | `kbots-common` metadata and setuptools package-dir mapping. |
 | `pes/pyproject.toml` | `vtraty-pes-bot` metadata, dependencies, CLI script, package-dir mapping. |

@@ -54,7 +54,7 @@ jobs:
         run: nix develop --command ruff check admin common pes
 
       - name: Python types (mypy)
-        run: nix develop --command uv run mypy admin/src common/src pes/src pes/evals
+        run: nix develop --command uv run mypy -p kbots_common -p vtraty_admin_bot -p vtraty_pes_bot && nix develop --command uv run mypy pes/evals
 
   nix:
     name: nix build

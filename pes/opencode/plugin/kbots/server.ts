@@ -36,13 +36,12 @@ export default {
         input: {
           type: "object",
           additionalProperties: false,
-          required: ["trigger_message_id", "points"],
+          required: ["trigger_message_id", "reply_to", "points"],
           properties: {
             trigger_message_id: { type: "integer", description: "message_id from the <trigger> block you answer." },
             reply_to: {
-              type: "string",
-              enum: ["claim", "tagger"],
-              description: "Where the answer goes: \"claim\" (default) under the checked message, \"tagger\" under the tag. Without a replied message it always goes under the tag."
+              type: "integer",
+              description: "message_id to post the answer under: the tag or a message this trigger showed you, never the bot's own."
             },
             verdict: {
               type: "string",

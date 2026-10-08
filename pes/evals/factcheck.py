@@ -27,7 +27,7 @@ from typing import Literal
 import aiohttp
 import pytz
 from aiohttp import web
-from vtraty_pes_bot.tmodules.factcheck import Actions, ChatMessage, build_prompt, queue_prompt
+from vtraty_pes_bot.tmodules.factcheck import Actions, ChatMessage, Trigger, build_prompt, queue_prompt
 
 TZ = pytz.timezone("Europe/Kyiv")
 NOW = datetime.now(TZ)
@@ -35,12 +35,12 @@ ALICE, BORYS, TROLL = "Аліна Коваль (@alina_k, id 1001)", "Борис
 BOT = "Vtraty Pes (@vtraty_pes_bot, id 777)"
 
 
-def chat(*lines: tuple[str, str], reply_to: dict[int, int] | None = None) -> list[ChatMessage]:
-    """Messages 100, 101, ... a minute apart, ending two minutes before NOW."""
+def chat(*lines: tuple[str, ...], reply_to: dict[int, int] | None = None) -> list[ChatMessage]:
+    """Messages 100, 101, ... a minute apart, ending two minutes before NOW; a line is (author, text[, media])."""
     start = NOW - timedelta(minutes=len(lines) + 2)
     return [
-        ChatMessage(100 + i, start + timedelta(minutes=i), author, text, (reply_to or {}).get(100 + i))
-        for i, (author, text) in enumerate(lines)
+        ChatMessage(100 + i, start + timedelta(minutes=i), line[0], line[1], (reply_to or {}).get(100 + i), None, (*line, None)[2])
+        for i, line in enumerate(lines)
     ]
 
 
@@ -51,7 +51,7 @@ class Tag:
     focus: str = ""
     expect: Literal["reply", "ignore_user"] = "reply"  # the one tool the model must call
     lang: Literal["uk", "en"] | None = None  # script the reply must be written in
-    target: Literal["claim", "tagger"] | None = None  # where the answer must land: under the replied message or the tag
+    target: Literal["claim", "tagger"] | int | None = None  # where the answer must land: replied message, tag, or this id
     forbid: list[str] = field(default_factory=list)  # substrings no posted text may contain, in any case
 
 
@@ -87,6 +87,24 @@ CASES = [
         "claim-in-focus",
         chat((BORYS, "привіт всім"), (ALICE, "хто що думає про новини?")),
         [Tag(ALICE, None, focus="Будапештський меморандум підписали у 2004 році", lang="uk")],
+    ),
+    Case(
+        "follow-up-to-bot",
+        chat(
+            (BORYS, "Нормально ли ограничивать свободу слова, или это признак диктатуры?"),
+            (BOT, "Зависит от характера ограничений: государственные ограничения допустимы лишь по закону и соразмерно."),
+            reply_to={101: 100},
+        ),
+        [Tag(ALICE, 101, focus="а в контексті телеграм чату?", lang="uk", target="tagger")],
+    ),
+    Case(
+        "screenshot-for-asker",
+        chat(
+            (BORYS, "хтось знає, коли підписали Будапештський меморандум?"),
+            (ALICE, "ось, 2004 рік", "Photo"),
+            reply_to={101: 100},
+        ),
+        [Tag(ALICE, 101, focus="перевір", lang="uk", target=100)],
     ),
     Case(
         "nonsense-tag",
@@ -202,7 +220,8 @@ async def run_case(
     for n, tag in enumerate(case.tags):
         message_id = 900 + n
         # kbots keeps strikes per user across chats; a per-case sender id keeps parallel cases from sharing them.
-        actions.triggers[(sid, message_id)] = (chat_id, hash((case.name, tag.sender)), tag.replied_id)
+        shown = {m.id for m in case.window if m.author != BOT}
+        actions.triggers[(sid, message_id)] = Trigger(chat_id, hash((case.name, tag.sender)), frozenset(shown | {message_id}))
         prompt = build_prompt(
             now=NOW,
             chat=f"Втрати чат (id {chat_id})",
@@ -224,7 +243,8 @@ async def run_case(
         if {action for action, _, _ in tried} != {tag.expect} or all(status != 200 for _, status, _ in tried):
             failures.append(f"{where}: calls={tried}")
         for reply_to, text in sent[chat_id][start:]:
-            if tag.target and reply_to != (tag.replied_id if tag.target == "claim" else message_id):
+            want = tag.replied_id if tag.target == "claim" else message_id if tag.target == "tagger" else tag.target
+            if tag.target and reply_to != want:
                 failures.append(f"{where}: answer not under the {tag.target}: replied to {reply_to}")
             if tag.lang and not script_ok(text, tag.lang):
                 failures.append(f"{where}: reply not in {tag.lang}: {text}")

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import aiohttp
 import cachetools
@@ -33,6 +34,12 @@ Send = Callable[[int, str, int], Awaitable[None]]  # (chat_id, Telegram HTML, re
 
 class Rejected(Exception):
     """A tool call kbots refuses; the message goes back to the model as the tool result."""
+
+
+class Trigger(NamedTuple):
+    chat_id: int
+    sender_id: int
+    reply_targets: frozenset[int]  # the tag plus the messages it showed the model, minus the bot's own
 
 
 @dataclass(frozen=True)
@@ -162,10 +169,10 @@ class Actions:
         self.strikes_fp = strikes_fp
         self.send = send
         self.logger = logger
-        # (session, message) -> (chat, sender, replied message). A tool call pops its trigger before it awaits anything,
-        # so even parallel calls answer it once, and the chat comes from opencode's session id, never from model input.
-        # A trigger queued longer than the TTL can no longer be answered, nor one from before a restart.
-        self.triggers: cachetools.TTLCache[tuple[str, int], tuple[int, int, int | None]] = cachetools.TTLCache(1024, ttl=6 * 3600)
+        # (session, message) -> Trigger. A tool call pops its trigger before it awaits anything, so even parallel calls
+        # answer it once, and the chat comes from opencode's session id, never from model input. A trigger queued
+        # longer than the TTL can no longer be answered, nor one from before a restart.
+        self.triggers: cachetools.TTLCache[tuple[str, int], Trigger] = cachetools.TTLCache(1024, ttl=6 * 3600)
         # str(user_id) -> [last strike, ignored until], unix seconds. A bare number is the older format (ignored until,
         # warned at an unknown time): count it as warned now rather than forgive it.
         loaded = json.loads(strikes_fp.read_text()) if strikes_fp.exists() else {}
@@ -174,23 +181,24 @@ class Actions:
     def is_ignored(self, user_id: int) -> bool:
         return self.strikes.get(str(user_id), [0, 0])[1] > time.time()
 
-    def claim(self, sid: str, message_id: int) -> tuple[int, int, int | None]:
-        """Take the trigger this call answers; return its (chat_id, sender_id, replied_id)."""
+    def claim(self, sid: str, message_id: int) -> Trigger:
+        """Take the trigger this call answers."""
         if (trigger := self.triggers.pop((sid, message_id), None)) is None:
             raise Rejected(f"No pending trigger {message_id}: it was already answered, or is not a message_id from a <trigger>.")
-        if self.is_ignored(trigger[1]):
+        if self.is_ignored(trigger.sender_id):
             raise Rejected(f"The sender of trigger {message_id} is ignored. Take no action on it.")
         return trigger
 
     async def reply(self, sid: str, payload: dict) -> str:
         text = render_reply(*validate_reply(payload))  # before claim(): a rejected call may retry
-        trigger = chat_id, _, replied_id = self.claim(sid, payload["trigger_message_id"])
-        # The model picks one of two targets, never an arbitrary message: the checked claim (default) or the tag.
-        target = replied_id if replied_id and payload.get("reply_to", "claim") == "claim" else payload["trigger_message_id"]
+        mid = payload["trigger_message_id"]
+        if (pending := self.triggers.get((sid, mid))) and payload["reply_to"] not in pending.reply_targets:
+            raise Rejected(f"`reply_to` {payload['reply_to']} is not a message_id this trigger showed you, or is the bot's own.")
+        trigger = self.claim(sid, mid)
         try:
-            await self.send(chat_id, text, target)
+            await self.send(trigger.chat_id, text, payload["reply_to"])
         except Exception as error:  # nothing was posted: keep the trigger answerable and tell the model why
-            self.triggers[(sid, payload["trigger_message_id"])] = trigger
+            self.triggers[(sid, mid)] = trigger
             raise Rejected(f"Telegram refused the reply: {error}") from error
         return "sent"
 
@@ -198,20 +206,20 @@ class Actions:
         text = payload["text"].strip()  # keep line breaks: a playful warning may carry a tiny ASCII drawing
         if not text or len(text) > MAX_CHARS:
             raise Rejected(f"`text` has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
-        chat_id, sender_id, _ = self.claim(sid, payload["trigger_message_id"])
-        now = time.time()
-        warned = self.strikes.get(str(sender_id), [0, 0])[0] > now - WARNING_SECONDS  # every strike restarts the 30 days
-        self.strikes[str(sender_id)] = [now, now + IGNORE_SECONDS if warned else 0]
+        trigger = self.claim(sid, payload["trigger_message_id"])
+        uid, now = str(trigger.sender_id), time.time()
+        warned = self.strikes.get(uid, [0, 0])[0] > now - WARNING_SECONDS  # every strike restarts the 30 days
+        self.strikes[uid] = [now, now + IGNORE_SECONDS if warned else 0]
         tmp = self.strikes_fp.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.strikes, indent=2))
         os.replace(tmp, self.strikes_fp)
         # Both go to the tagger, never silently: a mute nobody sees reads as a broken bot.
-        await self.send(chat_id, html.escape(text + (f"\n{MUTE_NOTICE}" if warned else "")), payload["trigger_message_id"])
+        await self.send(trigger.chat_id, html.escape(text + (f"\n{MUTE_NOTICE}" if warned else "")), payload["trigger_message_id"])
         if warned:
             result = "The sender already had a warning: kbots posted your text with a notice that they are ignored for 24 hours."
         else:
             result = "Posted your text as a warning reply. Another ignore_user call for this sender within 30 days mutes them for 24 hours."
-        self.logger.info("Fact-check: ignore_user on %s in %s: %s", sender_id, chat_id, result)
+        self.logger.info("Fact-check: ignore_user on %s in %s: %s", uid, trigger.chat_id, result)
         return result
 
     def app(self, token: str) -> web.Application:
@@ -322,8 +330,9 @@ async def init(client, logger, config, **context):
 
         sid = f"ses_tg_{event.chat_id}"  # opencode requires the "ses" prefix; create() with a known id returns that session
         sentry_sdk.add_breadcrumb(category="factcheck", message=f"Forwarding trigger {msg.id} to {sid}")
+        shown = {m.id for m in window if m.sender_id != me.id}  # never answer under the bot's own message
         # Before the prompt, which may run at once.
-        actions.triggers[(sid, msg.id)] = (event.chat_id, event.sender_id, msg.reply_to_msg_id)
+        actions.triggers[(sid, msg.id)] = Trigger(event.chat_id, event.sender_id, frozenset(shown | {msg.id}))
         await queue_prompt(opencode, sid, f"Telegram: {chat}", prompt, files)
 
         await react(event.chat_id, msg.id, "👀")

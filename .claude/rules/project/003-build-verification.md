@@ -44,7 +44,8 @@ nix develop --command uv sync --frozen --all-packages
 # Python.
 nix develop --command ruff format --check admin common pes
 nix develop --command ruff check admin common pes
-nix develop --command uv run mypy admin/src common/src pes/src pes/evals
+nix develop --command uv run mypy -p kbots_common -p vtraty_admin_bot -p vtraty_pes_bot
+nix develop --command uv run mypy pes/evals
 
 # Nix.
 nix develop --command alejandra -c .
