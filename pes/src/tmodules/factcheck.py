@@ -20,13 +20,14 @@ from telethon import events, functions, types, utils
 
 # Set on the session every trigger: a config default model loses its #variant and, when unavailable (no ChatGPT
 # login yet), silently falls back to any available model, even a free one. A session model fails the turn instead.
-MODEL = {"providerID": "openai", "id": "gpt-6-luna-fast", "variant": "medium"}
+MODEL = {"providerID": "openai", "id": "gpt-6-luna-fast", "variant": "high"}
 CONTEXT_BEFORE, CONTEXT_AFTER = 15, 5  # message IDs around the replied (or trigger) message sent as chat context
-MAX_POINTS, MAX_CHARS, MAX_SOURCES, MAX_VERDICT = 3, 250, 4, 40
+MAX_POINTS, MAX_CHARS, MAX_SOURCES, MAX_VERDICT = 3, 500, 4, 40
 IGNORE_SECONDS = WARNING_SECONDS = 24 * 60 * 60  # mute length; how long a warning counts
 MUTE_NOTICE = "🙉 Наступні 24 години ігноруватиму твої запити."  # appended to the model's text on a repeat strike
 SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 IMAGE_MIMES, MAX_IMAGES, MAX_IMAGE_BYTES = ("image/jpeg", "image/png", "image/webp"), 4, 10 * 1024 * 1024
+OWN_MARKERS = re.compile(r"(?<=[.!?…»\"])[⁰¹²³⁴⁵⁶⁷⁸⁹ ]*[⁰¹²³⁴⁵⁶⁷⁸⁹]")  # model-typed ¹ after sentences: kbots adds the links
 URL = re.compile(r"https?://[^\s/?#\[\]]+\S*")  # urlparse raises on some model-written URLs ("https://[x")
 
 Send = Callable[[int, str, int], Awaitable[None]]  # (chat_id, Telegram HTML, reply_to message_id)
@@ -48,16 +49,21 @@ class ChatMessage:
     date: datetime
     author: str
     text: str
-    reply_to: int | None = None
-    forwarded_from: str | None = None  # "" when the origin is hidden or not resolvable
-    media: str | None = None
+    reply_to: int | None
+    forwarded_from: str | None  # "" when the origin is hidden or not resolvable
+    media: str | None
+    links: tuple[str, ...]  # hidden behind text or in the link preview, so the model can read a forward's source
 
     @classmethod
     def from_telethon(cls, msg) -> "ChatMessage":
         fwd = msg.forward
         forwarded = None if fwd is None else (fwd.from_name or utils.get_display_name(fwd.chat or fwd.sender))
         media = type(msg.media).__name__.removeprefix("MessageMedia") if msg.media else None
-        return cls(msg.id, msg.date, describe(msg.sender), msg.message or "", msg.reply_to_msg_id, forwarded, media)
+        text = msg.message or ""
+        urls = [e.url for e in msg.entities or () if isinstance(e, types.MessageEntityTextUrl)]
+        urls += [msg.web_preview.url] if msg.web_preview else []
+        links = tuple(url for url in dict.fromkeys(urls) if url not in text)
+        return cls(msg.id, msg.date, describe(msg.sender), text, msg.reply_to_msg_id, forwarded, media, links)
 
     def render(self, tz) -> str:
         head = f"[{self.id}] {self.date.astimezone(tz):%d.%m %H:%M} {self.author}"
@@ -66,7 +72,8 @@ class ChatMessage:
         if self.forwarded_from is not None:
             head += f" (forwarded from {self.forwarded_from})" if self.forwarded_from else " (forwarded)"
         media = f"[{self.media}] " if self.media else ""
-        return quote(f"{head}:\n{media}{self.text}")
+        links = f"\n[links: {' '.join(self.links)}]" if self.links else ""
+        return quote(f"{head}:\n{media}{self.text}{links}")
 
 
 async def attach_images(msgs, logger) -> list[dict]:
@@ -95,7 +102,7 @@ def describe(user) -> str:
 
 
 def quote(text: str) -> str:
-    return html.escape(text, quote=False)  # chat text must not close or forge the <trigger>/<conversation> blocks
+    return text.replace("<", "&lt;")  # chat text must not close or forge the <trigger>/<conversation> blocks; URLs keep &
 
 
 def build_prompt(
@@ -134,14 +141,14 @@ def render_reply(verdict: str, points: list[tuple[str, list[str]]]) -> str:
         for url in dict.fromkeys(sources):
             number = numbers.setdefault(url, len(numbers) + 1)
             refs.append(f'<a href="{html.escape(url)}">{str(number).translate(SUPERSCRIPT)}</a>')
-        lines.append(quote(text) + "\u2009".join(refs))  # thin space, else ¹² reads as 12
+        lines.append(html.escape(text, quote=False) + "\u2009".join(refs))  # thin space, else ¹² reads as 12
     if not verdict and len(lines) == 1:
         return lines[0]
-    return (f"{quote(verdict)}:\n" if verdict else "") + "\n".join(f"- {line}" for line in lines)
+    return (f"{html.escape(verdict, quote=False)}:\n" if verdict else "") + "\n".join(f"- {line}" for line in lines)
 
 
 def validate_reply(payload: dict) -> tuple[str, list[tuple[str, list[str]]]]:
-    """Limits only: the plugin's input schema already guarantees the types."""
+    """Limits and source rules: the plugin's input schema already guarantees the types."""
     verdict = " ".join(payload.get("verdict", "").split()).rstrip(":")
     if len(verdict) > MAX_VERDICT:
         raise Rejected(f"`verdict` has {len(verdict)} characters; keep it a short label of at most {MAX_VERDICT}.")
@@ -149,7 +156,7 @@ def validate_reply(payload: dict) -> tuple[str, list[tuple[str, list[str]]]]:
         raise Rejected(f"`points` must hold 1 to {MAX_POINTS} items.")
     points = []
     for i, item in enumerate(payload["points"], 1):
-        text, sources = item["text"].strip(), item["sources"]  # keep the model's line breaks and spacing
+        text, sources = OWN_MARKERS.sub("", item["text"].strip()), item["sources"]  # keep the model's line breaks and spacing
         if not text or len(text) > MAX_CHARS:
             raise Rejected(f"Point {i} has {len(text)} characters; it must have 1 to {MAX_CHARS}. Shorten it.")
         if "http://" in text or "https://" in text:
@@ -158,6 +165,8 @@ def validate_reply(payload: dict) -> tuple[str, list[tuple[str, list[str]]]]:
             raise Rejected(f"Point {i} must have at most {MAX_SOURCES} sources.")
         if bad := [url for url in sources if not URL.fullmatch(url)]:
             raise Rejected(f"Point {i} source {bad[0]!r} is not an http(s) URL.")
+        if gn := [url for url in sources if "news.google.com/" in url]:
+            raise Rejected(f"Point {i} cites a Google News link ({gn[0][:60]}...): cite the publisher's article you read instead.")
         points.append((text, sources))
     return verdict, points
 
@@ -173,10 +182,8 @@ class Actions:
         # answer it once, and the chat comes from opencode's session id, never from model input. A trigger queued
         # longer than the TTL can no longer be answered, nor one from before a restart.
         self.triggers: cachetools.TTLCache[tuple[str, int], Trigger] = cachetools.TTLCache(1024, ttl=6 * 3600)
-        # str(user_id) -> [last strike, ignored until], unix seconds. A bare number is the older format (ignored until,
-        # warned at an unknown time): count it as warned now rather than forgive it.
-        loaded = json.loads(strikes_fp.read_text()) if strikes_fp.exists() else {}
-        self.strikes: dict[str, list[float]] = {k: v if isinstance(v, list) else [time.time(), v] for k, v in loaded.items()}
+        # str(user_id) -> [last strike, ignored until], unix seconds
+        self.strikes: dict[str, list[float]] = json.loads(strikes_fp.read_text()) if strikes_fp.exists() else {}
 
     def is_ignored(self, user_id: int) -> bool:
         return self.strikes.get(str(user_id), [0, 0])[1] > time.time()
@@ -190,6 +197,8 @@ class Actions:
         return trigger
 
     async def reply(self, sid: str, payload: dict) -> str:
+        if payload["warning"]:
+            return await self.warn(sid, payload)
         text = render_reply(*validate_reply(payload))  # before claim(): a rejected call may retry
         mid = payload["trigger_message_id"]
         if (pending := self.triggers.get((sid, mid))) and payload["reply_to"] not in pending.reply_targets:
@@ -202,10 +211,13 @@ class Actions:
             raise Rejected(f"Telegram refused the reply: {error}") from error
         return "sent"
 
-    async def ignore_user(self, sid: str, payload: dict) -> str:
-        text = payload["text"].strip()  # keep line breaks: a playful warning may carry a tiny ASCII drawing
+    async def warn(self, sid: str, payload: dict) -> str:
+        points = payload["points"]
+        if payload.get("verdict") or len(points) != 1 or points[0]["sources"]:
+            raise Rejected("A warning is one point with no verdict and no sources.")
+        text = points[0]["text"].strip()  # keep line breaks: a playful warning may carry a tiny ASCII drawing
         if not text or len(text) > MAX_CHARS:
-            raise Rejected(f"`text` has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
+            raise Rejected(f"The warning has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
         trigger = self.claim(sid, payload["trigger_message_id"])
         uid, now = str(trigger.sender_id), time.time()
         warned = self.strikes.get(uid, [0, 0])[0] > now - WARNING_SECONDS  # every strike restarts the window
@@ -219,26 +231,23 @@ class Actions:
         if warned:
             result = "The sender already had a warning: kbots posted your text with a notice that they are ignored for 24 hours."
         else:
-            result = "Posted your text as a warning reply. Another ignore_user call for this sender within 24 hours mutes them for 24 hours."
-        self.logger.info("Fact-check: ignore_user on %s in %s: %s", uid, trigger.chat_id, result)
+            result = "Posted your warning. Another one for this sender within 24 hours mutes them for 24 hours."
+        self.logger.info("Fact-check: warning to %s in %s: %s", uid, trigger.chat_id, result)
         return result
 
     def app(self, token: str) -> web.Application:
-        handlers = {"reply": self.reply, "ignore_user": self.ignore_user}
-
         async def callback(request: web.Request) -> web.Response:
             if not hmac.compare_digest(request.headers.get("Authorization", "").encode(), f"Bearer {token}".encode()):
                 return web.Response(status=401, text="unauthorized")
             body = await request.json()
-            action = request.match_info["action"]
-            sentry_sdk.add_breadcrumb(category="factcheck", message=f"Tool call {action} in {body['session_id']}")
+            sentry_sdk.add_breadcrumb(category="factcheck", message=f"Reply call in {body['session_id']}")
             try:
-                return web.Response(text=await handlers[action](body["session_id"], body["input"]))
+                return web.Response(text=await self.reply(body["session_id"], body["input"]))
             except Rejected as error:
                 return web.Response(status=422, text=str(error))
 
         app = web.Application()
-        app.router.add_post("/opencode/{action:reply|ignore_user}", callback)
+        app.router.add_post("/opencode/reply", callback)
         return app
 
 

@@ -12,13 +12,13 @@
     { "action": "*", "resource": "*", "effect": "deny" },
     { "action": "websearch", "resource": "*", "effect": "allow" },
     { "action": "webfetch", "resource": "*", "effect": "allow" },
-    { "action": "kbots_reply", "resource": "*", "effect": "allow" },
-    { "action": "kbots_ignore_user", "resource": "*", "effect": "allow" }
+    { "action": "kbots_reply", "resource": "*", "effect": "allow" }
   ],
 
-  // Without a provider, websearch opens a consent form and the unattended turn blocks. Exa works keyless
-  // (EXA_API_KEY raises its rate limit); unlike "random" it returns a 429 to the model instead of switching.
-  "websearch": { "provider": "exa" },
+  // Without a provider, websearch opens a consent form and the unattended turn blocks. Parallel is pinned: keyless,
+  // it returns the most article text; others return snippets or nothing, and "random" keeps a chat on whichever it
+  // draws. A 429 goes back to the model, which then fetches pages directly.
+  "websearch": { "provider": "parallel" },
 
   "snapshots": false // sessions sit in the server's cwd; from a git checkout (local runs, evals) every step snapshots it
 }
