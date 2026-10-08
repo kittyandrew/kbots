@@ -23,7 +23,7 @@ from telethon import events, functions, types, utils
 MODEL = {"providerID": "openai", "id": "gpt-6-luna-fast", "variant": "medium"}
 CONTEXT_BEFORE, CONTEXT_AFTER = 15, 5  # message IDs around the replied (or trigger) message sent as chat context
 MAX_POINTS, MAX_CHARS, MAX_SOURCES, MAX_VERDICT = 3, 250, 4, 40
-IGNORE_SECONDS, WARNING_SECONDS = 24 * 60 * 60, 30 * 24 * 60 * 60  # mute length; how long a warning counts
+IGNORE_SECONDS = WARNING_SECONDS = 24 * 60 * 60  # mute length; how long a warning counts
 MUTE_NOTICE = "🙉 Наступні 24 години ігноруватиму твої запити."  # appended to the model's text on a repeat strike
 SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 IMAGE_MIMES, MAX_IMAGES, MAX_IMAGE_BYTES = ("image/jpeg", "image/png", "image/webp"), 4, 10 * 1024 * 1024
@@ -208,7 +208,7 @@ class Actions:
             raise Rejected(f"`text` has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
         trigger = self.claim(sid, payload["trigger_message_id"])
         uid, now = str(trigger.sender_id), time.time()
-        warned = self.strikes.get(uid, [0, 0])[0] > now - WARNING_SECONDS  # every strike restarts the 30 days
+        warned = self.strikes.get(uid, [0, 0])[0] > now - WARNING_SECONDS  # every strike restarts the window
         self.strikes[uid] = [now, now + IGNORE_SECONDS if warned else 0]
         tmp = self.strikes_fp.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.strikes, indent=2))
@@ -219,7 +219,7 @@ class Actions:
         if warned:
             result = "The sender already had a warning: kbots posted your text with a notice that they are ignored for 24 hours."
         else:
-            result = "Posted your text as a warning reply. Another ignore_user call for this sender within 30 days mutes them for 24 hours."
+            result = "Posted your text as a warning reply. Another ignore_user call for this sender within 24 hours mutes them for 24 hours."
         self.logger.info("Fact-check: ignore_user on %s in %s: %s", uid, trigger.chat_id, result)
         return result
 

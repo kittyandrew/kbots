@@ -73,7 +73,7 @@ export default {
         description:
           "Act on a trigger whose sender abuses or misuses the bot, as your instructions define. " +
           "Always targets the sender of that trigger, nobody else. kbots posts `text` as a warning reply to them; if they were " +
-          "warned in the past 30 days, it adds a notice that they are ignored for 24 hours. Returns what kbots did.",
+          "warned in the past 24 hours, it adds a notice that they are ignored for 24 hours. Returns what kbots did.",
         input: {
           type: "object",
           additionalProperties: false,
