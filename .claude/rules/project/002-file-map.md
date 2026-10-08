@@ -75,7 +75,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 | `.envrc` | direnv: `use flake`, then loads `.env` if present. |
 | `.env.sample` | Optional local env vars: Sentry, and `EXA_API_KEY` for the fact-check sidecar. |
 | `docs/observability.md` | Sentry integration and breadcrumb conventions. |
-| `docs/factcheck.md` | Fact-check flow, enforced rules, sidecar env, security and evals. |
+| `docs/factcheck.md` | Fact-check design decisions, ChatGPT login, security, evals and known limits. |
 
 ## Agent Instructions
 

@@ -22,7 +22,8 @@ from telethon import events, functions, types, utils
 MODEL = {"providerID": "openai", "id": "gpt-6-luna-fast", "variant": "medium"}
 CONTEXT_BEFORE, CONTEXT_AFTER = 15, 5  # message IDs around the replied (or trigger) message sent as chat context
 MAX_POINTS, MAX_CHARS, MAX_SOURCES, MAX_VERDICT = 3, 250, 4, 40
-IGNORE_SECONDS = 24 * 60 * 60
+IGNORE_SECONDS, WARNING_SECONDS = 24 * 60 * 60, 30 * 24 * 60 * 60  # mute length; how long a warning counts
+MUTE_NOTICE = "🙉 Наступні 24 години ігноруватиму твої запити."  # appended to the model's text on a repeat strike
 SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 IMAGE_MIMES, MAX_IMAGES, MAX_IMAGE_BYTES = ("image/jpeg", "image/png", "image/webp"), 4, 10 * 1024 * 1024
 URL = re.compile(r"https?://[^\s/?#\[\]]+\S*")  # urlparse raises on some model-written URLs ("https://[x")
@@ -79,10 +80,6 @@ async def attach_images(msgs, logger) -> list[dict]:
     return files
 
 
-def session_id(chat_id: int) -> str:
-    return f"ses_tg_{chat_id}"  # opencode requires the "ses" prefix; create() with a known id returns that session
-
-
 def describe(user) -> str:
     if user is None:
         return "unknown"
@@ -120,23 +117,23 @@ def build_prompt(
     )
 
 
-def render_reply(verdict: str, points: list[dict]) -> str:
+def render_reply(verdict: str, points: list[tuple[str, list[str]]]) -> str:
     """Telegram HTML: an optional "Verdict:" line, then one "- point" line each; a lone point without a verdict
     stays a plain line. Every point is followed by superscript links, numbered by first appearance."""
     numbers: dict[str, int] = {}
     lines = []
-    for point in points:
+    for text, sources in points:
         refs = []
-        for url in dict.fromkeys(point["sources"]):
+        for url in dict.fromkeys(sources):
             number = numbers.setdefault(url, len(numbers) + 1)
             refs.append(f'<a href="{html.escape(url)}">{str(number).translate(SUPERSCRIPT)}</a>')
-        lines.append(quote(point["text"]) + "\u2009".join(refs))  # thin space, else ¹² reads as 12
+        lines.append(quote(text) + "\u2009".join(refs))  # thin space, else ¹² reads as 12
     if not verdict and len(lines) == 1:
         return lines[0]
     return (f"{quote(verdict)}:\n" if verdict else "") + "\n".join(f"- {line}" for line in lines)
 
 
-def validate_reply(payload: dict) -> tuple[str, list[dict]]:
+def validate_reply(payload: dict) -> tuple[str, list[tuple[str, list[str]]]]:
     """Limits only: the plugin's input schema already guarantees the types."""
     verdict = " ".join(payload.get("verdict", "").split()).rstrip(":")
     if len(verdict) > MAX_VERDICT:
@@ -154,7 +151,7 @@ def validate_reply(payload: dict) -> tuple[str, list[dict]]:
             raise Rejected(f"Point {i} must have at most {MAX_SOURCES} sources.")
         if bad := [url for url in sources if not URL.fullmatch(url)]:
             raise Rejected(f"Point {i} source {bad[0]!r} is not an http(s) URL.")
-        points.append({"text": text, "sources": sources})
+        points.append((text, sources))
     return verdict, points
 
 
@@ -165,18 +162,20 @@ class Actions:
         self.strikes_fp = strikes_fp
         self.send = send
         self.logger = logger
-        # (session, message) -> (chat, sender, message the answer replies to). A tool call pops its trigger before it
-        # awaits anything, so even parallel calls answer it once, and the chat comes from opencode's session id, never
-        # from model input. A trigger queued longer than the TTL can no longer be answered, nor one from before a restart.
-        self.triggers: cachetools.TTLCache[tuple[str, int], tuple[int, int, int]] = cachetools.TTLCache(1024, ttl=6 * 3600)
-        # str(user_id) -> unix time they are ignored until. Present, even at 0, means they were warned once.
-        self.strikes: dict[str, float] = json.loads(strikes_fp.read_text()) if strikes_fp.exists() else {}
+        # (session, message) -> (chat, sender, replied message). A tool call pops its trigger before it awaits anything,
+        # so even parallel calls answer it once, and the chat comes from opencode's session id, never from model input.
+        # A trigger queued longer than the TTL can no longer be answered, nor one from before a restart.
+        self.triggers: cachetools.TTLCache[tuple[str, int], tuple[int, int, int | None]] = cachetools.TTLCache(1024, ttl=6 * 3600)
+        # str(user_id) -> [last strike, ignored until], unix seconds. A bare number is the older format (ignored until,
+        # warned at an unknown time): count it as warned now rather than forgive it.
+        loaded = json.loads(strikes_fp.read_text()) if strikes_fp.exists() else {}
+        self.strikes: dict[str, list[float]] = {k: v if isinstance(v, list) else [time.time(), v] for k, v in loaded.items()}
 
     def is_ignored(self, user_id: int) -> bool:
-        return self.strikes.get(str(user_id), 0) > time.time()
+        return self.strikes.get(str(user_id), [0, 0])[1] > time.time()
 
-    def claim(self, sid: str, message_id: int) -> tuple[int, int, int]:
-        """Take the trigger this call answers; return its (chat_id, sender_id, answer_to)."""
+    def claim(self, sid: str, message_id: int) -> tuple[int, int, int | None]:
+        """Take the trigger this call answers; return its (chat_id, sender_id, replied_id)."""
         if (trigger := self.triggers.pop((sid, message_id), None)) is None:
             raise Rejected(f"No pending trigger {message_id}: it was already answered, or is not a message_id from a <trigger>.")
         if self.is_ignored(trigger[1]):
@@ -185,8 +184,12 @@ class Actions:
 
     async def reply(self, sid: str, payload: dict) -> str:
         text = render_reply(*validate_reply(payload))  # before claim(): a rejected call may retry
-        chat_id, _, answer_to = self.claim(sid, payload["trigger_message_id"])
-        await self.send(chat_id, text, answer_to)
+        trigger = chat_id, _, replied_id = self.claim(sid, payload["trigger_message_id"])
+        try:
+            await self.send(chat_id, text, replied_id or payload["trigger_message_id"])  # under the checked claim, not the tag
+        except Exception as error:  # nothing was posted: keep the trigger answerable and tell the model why
+            self.triggers[(sid, payload["trigger_message_id"])] = trigger
+            raise Rejected(f"Telegram refused the reply: {error}") from error
         return "sent"
 
     async def ignore_user(self, sid: str, payload: dict) -> str:
@@ -194,16 +197,18 @@ class Actions:
         if not text or len(text) > MAX_CHARS:
             raise Rejected(f"`text` has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
         chat_id, sender_id, _ = self.claim(sid, payload["trigger_message_id"])
-        warned = str(sender_id) in self.strikes
-        self.strikes[str(sender_id)] = time.time() + IGNORE_SECONDS if warned else 0
+        now = time.time()
+        warned = self.strikes.get(str(sender_id), [0, 0])[0] > now - WARNING_SECONDS  # every strike restarts the 30 days
+        self.strikes[str(sender_id)] = [now, now + IGNORE_SECONDS if warned else 0]
         tmp = self.strikes_fp.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.strikes, indent=2))
         os.replace(tmp, self.strikes_fp)
+        # Both go to the tagger, never silently: a mute nobody sees reads as a broken bot.
+        await self.send(chat_id, html.escape(text + (f"\n{MUTE_NOTICE}" if warned else "")), payload["trigger_message_id"])
         if warned:
-            result = "The sender already had a warning: kbots now ignores them for 24 hours and posted nothing."
+            result = "The sender already had a warning: kbots posted your text with a notice that they are ignored for 24 hours."
         else:
-            await self.send(chat_id, html.escape(text), payload["trigger_message_id"])  # the warning goes to the tagger
-            result = "Posted your text as a warning reply. The next ignore_user call for this sender silences them."
+            result = "Posted your text as a warning reply. Another ignore_user call for this sender within 30 days mutes them for 24 hours."
         self.logger.info("Fact-check: ignore_user on %s in %s: %s", sender_id, chat_id, result)
         return result
 
@@ -269,6 +274,13 @@ async def init(client, logger, config, **context):
             or (isinstance(entity, types.MessageEntityMentionName) and entity.user_id == me.id)
         ]
 
+    async def react(chat_id: int, msg_id: int, emoji: str):
+        try:
+            reaction = [types.ReactionEmoji(emoticon=emoji)]
+            await client(functions.messages.SendReactionRequest(peer=chat_id, msg_id=msg_id, reaction=reaction))
+        except Exception:  # best effort: reactions can be disabled or limited in the chat
+            logger.warning("Fact-check: could not react %s to %s", emoji, msg_id, exc_info=True)
+
     async def fetch(chat_id: int, ids) -> list:
         return [m for m in await client.get_messages(chat_id, ids=list(ids)) if m is not None]
 
@@ -277,7 +289,7 @@ async def init(client, logger, config, **context):
         msg = event.message
         if actions.is_ignored(event.sender_id):
             logger.info("Fact-check: ignoring tag from %s", event.sender_id)
-            return
+            return await react(event.chat_id, msg.id, "🙉")  # Telegram's reaction set has no 🚫 or 🔇
 
         anchor = msg.reply_to_msg_id or msg.id
         ids = (i for i in range(max(1, anchor - CONTEXT_BEFORE), anchor + CONTEXT_AFTER + 1) if i != msg.id)
@@ -306,16 +318,12 @@ async def init(client, logger, config, **context):
             attachments=[f["name"] for f in files],
         )
 
-        sid = session_id(event.chat_id)
+        sid = f"ses_tg_{event.chat_id}"  # opencode requires the "ses" prefix; create() with a known id returns that session
         sentry_sdk.add_breadcrumb(category="factcheck", message=f"Forwarding trigger {msg.id} to {sid}")
-        # Before the prompt, which may run at once. The answer replies to the checked claim, not to the tag.
-        actions.triggers[(sid, msg.id)] = (event.chat_id, event.sender_id, msg.reply_to_msg_id or msg.id)
+        # Before the prompt, which may run at once.
+        actions.triggers[(sid, msg.id)] = (event.chat_id, event.sender_id, msg.reply_to_msg_id)
         await queue_prompt(opencode, sid, f"Telegram: {chat}", prompt, files)
 
-        try:
-            reaction = [types.ReactionEmoji(emoticon="👀")]
-            await client(functions.messages.SendReactionRequest(peer=event.chat_id, msg_id=msg.id, reaction=reaction))
-        except Exception:  # best effort: reactions can be disabled in the chat
-            logger.warning("Fact-check: could not react to %s", msg.id, exc_info=True)
+        await react(event.chat_id, msg.id, "👀")
 
     logger.info("Fact-check enabled for %s; callbacks on %s:%s", chat_ids, host, port)

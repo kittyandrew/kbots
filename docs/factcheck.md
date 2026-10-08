@@ -4,8 +4,9 @@ Tagging the PES bot in a configured chat, usually in reply to a message, asks an
 
 ## Design
 
-- **The model decides, kbots enforces.** kbots forwards every tag; the agent chooses to reply, warn or stay silent through two plugin tools that call back into the bot. kbots owns the Telegram token and checks every call: the reply shape, which trigger it answers, at most one action per trigger (claimed before any await, so parallel or re-run calls cannot double-post). A rejection goes back to the model as the tool result so it can retry.
-- **The chat comes from opencode's session id, never from model input**, and `ignore_user` can only hit the trigger's sender. A prompt injection cannot redirect a reply or punish someone else.
+- **The model decides, kbots enforces.** kbots forwards every tag; the agent acts on each with exactly one of two plugin tools that call back into the bot: reply or warn. kbots owns the Telegram token and checks every call: the reply shape, which trigger it answers, and at most one action per trigger, so parallel or re-run calls cannot double-post. A rejection goes back to the model as the tool result so it can retry.
+- **The chat comes from opencode's session id, never from model input**, and `ignore_user` can only hit the sender of a pending trigger. A prompt injection cannot redirect a reply to another chat or punish an arbitrary member; at worst it acts on another tag still pending in the same chat.
+- **Answers reply to the checked message, warnings to the tagger.** Misuse (nothing to check, off-topic requests) counts as abuse: a warning counts for 30 days from the member's last strike, and a strike within that window mutes them for 24 hours. Both are visible: a warning reply, a mute notice, and a 🙉 reaction on a muted member's tags.
 - **One persistent session per chat.** Follow-ups see earlier answers; triggers queue and run one at a time, which is the only throttle.
 - **The model is set on the session every trigger** (`MODEL`). opencode's config default drops the effort variant and silently falls back to any available model, even a free one; a session model fails loudly instead.
 - **Context:** the replied message with the messages around it, plus older messages they reply to (one hop), and images of the replied message, its album and the tag itself. Everything else stays a placeholder.
@@ -37,9 +38,9 @@ The sidecar reads text any chat member writes, so assume injection sometimes suc
 
 ## Known limits
 
-- The sidecar runs `opencode serve` in default mode, which does not resume turns a restart interrupted; that trigger keeps its 👀 and gets no answer. Pending triggers live in PES memory and do not survive a PES restart either.
-- If two consecutive queued turns fail, later queued triggers in that chat wait for the next tag.
+- The sidecar runs `opencode serve` in default mode, which does not resume turns a restart interrupted; that trigger keeps its 👀 and gets no answer. Pending triggers live in PES memory, so turns still queued across a PES restart run and their answers are rejected. Tags sent while PES is down are never seen: Telethon's catch-up would need `catch_up=True` plus handlers registered before connecting, and would replay up to a minute of already-handled updates into every module.
+- Queued triggers can stall until the next tag in that chat: after a sidecar restart, or after two consecutive failed turns.
 - Fetched pages, attached images and any injected text in them stay in the chat's session until compaction.
-- Context is fetched by message id, which spans minutes in a busy group but can reach back months in a quiet DM.
+- Context is fetched by message id, which spans minutes in a busy group but can reach back months in a quiet DM. In a forum chat, a bare tag's reply target is its topic's first message.
 - Turn failures surface only in the sidecar's stderr, not in kbots or Sentry.
 - A personal ChatGPT subscription behind a public bot may conflict with OpenAI's terms.
