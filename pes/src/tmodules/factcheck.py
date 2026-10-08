@@ -121,8 +121,8 @@ def build_prompt(
 
 
 def render_reply(verdict: str, points: list[dict]) -> str:
-    """Telegram HTML: "Verdict:" then one "- point" line each, or plain points without a verdict. Every point is
-    followed by superscript links, numbered by first appearance."""
+    """Telegram HTML: an optional "Verdict:" line, then one "- point" line each; a lone point without a verdict
+    stays a plain line. Every point is followed by superscript links, numbered by first appearance."""
     numbers: dict[str, int] = {}
     lines = []
     for point in points:
@@ -131,7 +131,9 @@ def render_reply(verdict: str, points: list[dict]) -> str:
             number = numbers.setdefault(url, len(numbers) + 1)
             refs.append(f'<a href="{html.escape(url)}">{str(number).translate(SUPERSCRIPT)}</a>')
         lines.append(quote(point["text"]) + "\u2009".join(refs))  # thin space, else ¹² reads as 12
-    return f"{quote(verdict)}:\n" + "\n".join(f"- {line}" for line in lines) if verdict else " ".join(lines)
+    if not verdict and len(lines) == 1:
+        return lines[0]
+    return (f"{quote(verdict)}:\n" if verdict else "") + "\n".join(f"- {line}" for line in lines)
 
 
 def validate_reply(payload: dict) -> tuple[str, list[dict]]:
@@ -143,7 +145,7 @@ def validate_reply(payload: dict) -> tuple[str, list[dict]]:
         raise Rejected(f"`points` must hold 1 to {MAX_POINTS} items.")
     points = []
     for i, item in enumerate(payload["points"], 1):
-        text, sources = " ".join(item["text"].split()), item["sources"]
+        text, sources = item["text"].strip(), item["sources"]  # keep the model's line breaks and spacing
         if not text or len(text) > MAX_CHARS:
             raise Rejected(f"Point {i} has {len(text)} characters; it must have 1 to {MAX_CHARS}. Shorten it.")
         if "http://" in text or "https://" in text:

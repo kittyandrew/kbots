@@ -29,7 +29,7 @@ export default {
         options: { codemode: false }, // a codemode tool lives inside `execute`, which the permission lockdown denies
         description:
           "Reply in Telegram to one trigger message. Each trigger accepts one reply or one ignore_user call, ever. " +
-          "With a `verdict`, kbots posts \"Verdict:\" and one \"- point\" line per point; without one, the points as plain text. " +
+          "kbots posts an optional \"Verdict:\" line, then one \"- point\" line per point; a lone point without a verdict is plain text. " +
           "1 to 3 points, each at most 250 characters. Put each point's sources in its `sources`; kbots renders them as " +
           "numbered superscript links after the point, so never write URLs or citation markers like [1] in `text`. " +
           "Returns `sent` on success, otherwise the reason it was rejected - fix the input and call again.",
