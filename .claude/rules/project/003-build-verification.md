@@ -26,6 +26,10 @@ nix run .#admin -- --help
 # Nix-built container images.
 nix build .#pes-image
 nix build .#admin-image
+
+# Fact-check sidecar and its image.
+nix build .#pes-opencode
+nix build .#pes-opencode-image
 ```
 
 ## Checks
@@ -40,18 +44,24 @@ nix develop --command uv sync --frozen --all-packages
 # Python.
 nix develop --command ruff format --check admin common pes
 nix develop --command ruff check admin common pes
-nix develop --command uv run mypy admin/src common/src pes/src
+nix develop --command uv run mypy admin/src common/src pes/src pes/evals
 
 # Nix.
 nix develop --command alejandra -c .
 nix develop --command deadnix --fail flake.nix nix/shared/default.nix
 nix flake show --all-systems
-nix build .#admin .#pes .#admin-image .#pes-image --no-link
+nix build .#admin .#pes .#pes-opencode .#admin-image .#pes-image .#pes-opencode-image --no-link
 nix flake check --all-systems
 
 # CLI smoke tests.
 nix run .#pes -- --help
 nix run .#admin -- --help
+```
+
+After changing `pes/opencode/`, `MODEL` or the fact-check prompt format, run the live evals (they need the sidecar's ChatGPT login; see `docs/factcheck.md`):
+
+```bash
+nix develop --command uv run python pes/evals/factcheck.py
 ```
 
 For GitHub Actions changes, also run:

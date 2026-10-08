@@ -32,6 +32,10 @@ To add a module, create a new file with `async def init(...)`. Keep bot-specific
 | Bot account | `client` | Commands, callbacks, table posts, downloader replies, gatekeeper messages, watermark replies. |
 | User account | `user` | Reads source channel history because bot accounts cannot reliably read channel history. |
 
+## PES Fact-Check Sidecar
+
+`tmodules/factcheck.py` forwards tags in `[factcheck] chat_ids` to the `pes-opencode` sidecar, one opencode session per chat. The sidecar's plugin calls back into the bot, which validates and posts. The prompt and plugin live in `pes/opencode/`; the model is `MODEL` in `factcheck.py`. Read `docs/factcheck.md` before changing any of them, and run `pes/evals/factcheck.py` after.
+
 ## Admin Single-Account Model
 
 Admin uses one Telegram session as `client`. It handles outgoing `/purge` commands in the configured admin chat and mirrors source-channel events to the target channel.

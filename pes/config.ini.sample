@@ -26,3 +26,17 @@ source_id =  # @Required: Telegram channel ID to read equipment loss posts from.
 
 [guesstimator]
 # historical =  # @Optional: Path to historical data file for the gatekeep module.
+
+[factcheck]
+# @Optional: comma-separated chat IDs where tagging the bot runs a fact-check. Empty disables the module.
+chat_ids =
+# The pes-opencode sidecar and its OPENCODE_SERVER_PASSWORD.
+opencode_url = http://127.0.0.1:4096
+opencode_password =
+# Where the sidecar's plugin reaches the bot (its KBOTS_CALLBACK_URL); 0.0.0.0 inside a container network.
+callback_host = 127.0.0.1
+callback_port = 8765
+# At least 32 characters; must equal the sidecar's KBOTS_CALLBACK_TOKEN.
+callback_token =
+# Per-user warnings and ignore deadlines.
+state_fp = data/factcheck_strikes.json

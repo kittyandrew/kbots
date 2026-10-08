@@ -54,7 +54,7 @@ jobs:
         run: nix develop --command ruff check admin common pes
 
       - name: Python types (mypy)
-        run: nix develop --command uv run mypy admin/src common/src pes/src
+        run: nix develop --command uv run mypy admin/src common/src pes/src pes/evals
 
   nix:
     name: nix build
@@ -69,7 +69,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
 
       - name: Build packages
-        run: nix build .#admin .#pes --no-link
+        run: nix build .#admin .#pes .#pes-opencode --no-link
 
       - name: Build Docker images
-        run: nix build .#admin-image .#pes-image --no-link
+        run: nix build .#admin-image .#pes-image .#pes-opencode-image --no-link

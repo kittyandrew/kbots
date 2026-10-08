@@ -21,6 +21,10 @@
       inputs.pyproject-nix.follows = "pyproject-nix";
       inputs.uv2nix.follows = "uv2nix";
     };
+
+    # Same reviewed revision as kittyos: V2 has no git tags. No nixpkgs.follows - upstream's nix/hashes.json
+    # matches only its own nixpkgs and bun, so following ours breaks the node_modules hash.
+    opencode.url = "github:anomalyco/opencode/01208048dc7742cff8d5085b3ed9048cd0c2f0d5";
   };
   outputs = {
     self,
@@ -28,6 +32,7 @@
     pyproject-nix,
     uv2nix,
     pyproject-build-systems,
+    opencode,
     ...
   }: let
     inherit (nixpkgs) lib;
@@ -64,8 +69,33 @@
       pes = mkEnv pythonSet "pes-env" {vtraty-pes-bot = [];} "vtraty-pes-bot";
       admin = mkEnv adminPythonSet "admin-env" {vtraty-admin-bot = [];} "vtraty-admin-bot";
       wkhtmltox = mkWkhtmltox pkgs;
+      # Compiled with our Bun, as kittyos does: upstream's flake builds with Bun 1.3.13 but the source pins bun@1.4.2,
+      # and the 1.3.13 bundle fails to load a plugin directory without a tui entry. node_modules keeps upstream's hash.
+      opencodeServer = (opencode.packages.${system}.opencode.override {inherit (pkgs) bun;}).overrideAttrs {
+        postPatch = ""; # upstream's downgrades packages/script's Bun range check to a warning; a mismatch must fail
+        postInstall = ""; # runs `opencode completion`, a command V2 lacks, and fails the build
+      };
+      # The fact-check sidecar: agent and plugin come from pes/opencode, all state from one directory, so neither
+      # the image nor a local run picks up a host ~/.claude, ~/.agents or ~/.config/opencode.
+      pes-opencode = pkgs.writeShellApplication {
+        name = "pes-opencode";
+        runtimeInputs = [pkgs.coreutils];
+        text = ''
+          : "''${PES_OPENCODE_STATE:?set to the sidecar state directory}"
+          : "''${OPENCODE_SERVER_PASSWORD:?set the password kbots uses for Basic auth}"
+          : "''${KBOTS_CALLBACK_URL:?set to the PES bot callback server, e.g. http://127.0.0.1:8765}"
+          : "''${KBOTS_CALLBACK_TOKEN:?set to the PES bot factcheck callback_token}"
+          PES_OPENCODE_STATE=$(realpath -m "$PES_OPENCODE_STATE") # local runs pass a relative path; keep HOME and XDG absolute
+          export HOME="$PES_OPENCODE_STATE/home" XDG_DATA_HOME="$PES_OPENCODE_STATE/data" # data: the DB, ChatGPT login included
+          export XDG_CACHE_HOME="$PES_OPENCODE_STATE/cache" XDG_STATE_HOME="$PES_OPENCODE_STATE/state"
+          export OPENCODE_CONFIG_DIR=${./pes/opencode} OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_FILEWATCHER=1
+          # Failed turns are logged only by opencode ("Failed to drain Session"); else they land in a file in the state dir.
+          export OPENCODE_PRINT_LOGS=1 OPENCODE_LOG_LEVEL=WARN
+          exec ${lib.getExe opencodeServer} serve "$@"
+        '';
+      };
     in {
-      inherit pes admin;
+      inherit pes admin pes-opencode;
       default = pes;
 
       pes-image =
@@ -77,6 +107,7 @@
           "FONTCONFIG_FILE=${wkhtmltox.fontconfig.out}/etc/fonts/fonts.conf"
         ];
       admin-image = mkImage pkgs "vtraty-admin-bot" admin "vtraty-admin-bot" [] [];
+      pes-opencode-image = mkImage pkgs "vtraty-pes-opencode" pes-opencode "pes-opencode" [] ["PES_OPENCODE_STATE=/usr/src/app/data"];
     });
 
     apps = forEachSystem ({system, ...}: let

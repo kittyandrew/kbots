@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // No "model": kbots sets one on every session (tmodules/factcheck.py MODEL), because the config default drops
+  // its #variant and silently falls back to any available model.
+  "default_agent": "factcheck",
+
+  // Appended to every agent's rules, built-ins included; last match wins, so this list decides. The sidecar
+  // reads untrusted chat text, so nothing reaches files, shell, skills, subagents or `execute` (codemode has an
+  // unchecked fetch). `allow`, never `ask`: an ask blocks the turn until someone answers it over HTTP.
+  "permissions": [
+    { "action": "*", "resource": "*", "effect": "deny" },
+    { "action": "websearch", "resource": "*", "effect": "allow" },
+    { "action": "webfetch", "resource": "*", "effect": "allow" },
+    { "action": "kbots_reply", "resource": "*", "effect": "allow" },
+    { "action": "kbots_ignore_user", "resource": "*", "effect": "allow" }
+  ],
+
+  // Without a provider, websearch opens a consent form and the unattended turn blocks. Exa works keyless
+  // (EXA_API_KEY raises its rate limit); unlike "random" it returns a 429 to the model instead of switching.
+  "websearch": { "provider": "exa" },
+
+  "snapshots": false // sessions sit in the server's cwd; from a git checkout (local runs, evals) every step snapshots it
+}

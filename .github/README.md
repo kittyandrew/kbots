@@ -41,6 +41,7 @@ nix build .#pes
 nix build .#admin
 nix build .#pes-image
 nix build .#admin-image
+nix build .#pes-opencode-image  # fact-check sidecar, see docs/factcheck.md
 ```
 
 ## Check
@@ -49,7 +50,7 @@ nix build .#admin-image
 nix develop --command uv lock --check
 nix develop --command ruff format --check admin common pes
 nix develop --command ruff check admin common pes
-nix develop --command uv run mypy admin/src common/src pes/src
+nix develop --command uv run mypy admin/src common/src pes/src pes/evals
 nix flake check --all-systems
 ```
 

@@ -13,8 +13,8 @@
 
 - Use uv2nix with `pyproject.nix` and `build-system-pkgs`.
 - Keep `nixpkgs` as the single root flake input; uv2nix, pyproject.nix, and build-system-pkgs must follow it.
-- Do not introduce secondary nixpkgs locks.
-- Keep flake outputs greppable: packages are `.#pes`, `.#admin`, `.#pes-image`, `.#admin-image`; apps are `.#pes`, `.#admin`.
+- Do not introduce secondary nixpkgs locks. One exception: the `opencode` input keeps its own nixpkgs, because upstream's `nix/hashes.json` matches only that nixpkgs and Bun. Pin it to the revision kittyos reviewed; see the comments in `flake.nix`.
+- Keep flake outputs greppable: packages are `.#pes`, `.#admin`, `.#pes-opencode`, `.#pes-image`, `.#admin-image`, `.#pes-opencode-image`; apps are `.#pes`, `.#admin`.
 - Shared Nix helper code belongs in `nix/shared/default.nix`; bot-specific output names stay visible in `flake.nix`.
 
 ## Containers And Runtime Tools

@@ -31,6 +31,16 @@ When adding, removing, or renaming files, update this map in the same staged cha
 | `downloader.py` | Shortform downloader using yt-dlp, `imageio-ffmpeg`, and OpenCV metadata fallback. |
 | `gatekeep.py` | New-user gatekeeper with delayed kick cancellation and optional Telegram ID age guesstimation. |
 | `watermark.py` | `/watermark` command for images/videos using OpenCV and `imageio-ffmpeg`. |
+| `factcheck.py` | Tag-triggered fact-check: `MODEL`, forwards to the opencode sidecar, validates and posts its tool calls, keeps per-user strikes. |
+
+## PES Fact-Check Sidecar: `pes/opencode/` and `pes/evals/`
+
+| File | Purpose |
+|------|---------|
+| `pes/opencode/opencode.jsonc` | Sidecar opencode config: default agent, permission lockdown, websearch. |
+| `pes/opencode/agent/factcheck.md` | Agent system prompt: rules, fact-check procedure, answer format, abuse policy. |
+| `pes/opencode/plugin/kbots/server.ts` | `kbots_reply` / `kbots_ignore_user` tools that call back into the bot. |
+| `pes/evals/factcheck.py` | Live behavior evals against the real sidecar with a fake Telegram. |
 
 ## Admin Bot: `admin/src/`
 
@@ -57,13 +67,15 @@ When adding, removing, or renaming files, update this map in the same staged cha
 | `common/pyproject.toml` | `kbots-common` metadata and setuptools package-dir mapping. |
 | `pes/pyproject.toml` | `vtraty-pes-bot` metadata, dependencies, CLI script, package-dir mapping. |
 | `admin/pyproject.toml` | `vtraty-admin-bot` metadata, dependencies, CLI script, package-dir mapping. |
-| `flake.nix` | Flake inputs/outputs, bot-specific env/image wiring, apps, dev shell. |
+| `flake.nix` | Flake inputs/outputs, bot-specific env/image wiring, `pes-opencode` sidecar, apps, dev shell. |
 | `nix/shared/default.nix` | Shared Nix helpers for uv2nix sets, virtualenvs, images, and `wkhtmltox`. |
 | `.github/workflows/build.yml` | PR/main quality gates, main-only package and image builds after quality. |
 | `pes/config.ini.sample` | PES config template. |
 | `admin/config.ini.sample` | Admin config template. |
-| `.env.sample` | Optional local Sentry env vars. |
+| `.envrc` | direnv: `use flake`, then loads `.env` if present. |
+| `.env.sample` | Optional local env vars: Sentry, and `EXA_API_KEY` for the fact-check sidecar. |
 | `docs/observability.md` | Sentry integration and breadcrumb conventions. |
+| `docs/factcheck.md` | Fact-check flow, enforced rules, sidecar env, security and evals. |
 
 ## Agent Instructions
 
