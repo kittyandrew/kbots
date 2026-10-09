@@ -18,12 +18,36 @@ const forward = async (sessionID: string, input: unknown, signal: AbortSignal) =
   return response.ok ? body : `kbots rejected the call (HTTP ${response.status}): ${body}`
 }
 
+// opencode's webfetch refuses PDFs, and many sites answer its datacenter IP with 403 (a browser user agent gets the
+// same). The keyless Jina reader (20 requests a minute) returns either as markdown; its error warnings mean it failed too.
+const readThroughJina = async (url: string, signal: AbortSignal) => {
+  const response = await fetch(`https://r.jina.ai/${url}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]) })
+  const text = await response.text()
+  const head = text.split("Markdown Content:", 1)[0]
+  return response.ok && !/^Warning: Target URL returned error|CAPTCHA|^Title: Just a moment/m.test(head) ? text : undefined
+}
+
 // Types only: opencode validates input against these schemas before execute. kbots enforces the limits the
 // descriptions state. Never add a `pattern` keyword - it makes opencode skip validation of the whole schema.
 export default {
   id: "kbots.telegram",
   setup: async (ctx) => {
     await ctx.tool.transform((editor) => {
+      editor.update("webfetch", (tool) => {
+        const direct = tool.execute
+        tool.execute = async (input, context) => {
+          try {
+            return await direct(input, context)
+          } catch (error) {
+            const { url, format } = input as { url: string; format: string }
+            // Returned, not thrown: a throw here reached the model as some other parallel call's failure.
+            const read = await readThroughJina(url, context.signal).catch(() => undefined)
+            const text = read ?? `${url} did not open (${String(error).slice(0, 200)}).`
+            const output = { url, contentType: "text/markdown", format, output: text }
+            return { output, content: text, metadata: { contentType: output.contentType } }
+          }
+        }
+      })
       editor.add({
         name: "kbots_reply",
         options: { codemode: false }, // a codemode tool lives inside `execute`, which the permission lockdown denies
@@ -45,7 +69,7 @@ export default {
               type: "boolean",
               description:
                 "true when you decline instead of answering - every refusal is a warning (see your instructions). kbots then posts " +
-                "your one point, without verdict or sources, as a warning under the tag; a second warning within 24 hours mutes the tagger for 24 hours."
+                "your one point, without verdict or sources, as a warning under the tag; after a second warning within 24 hours kbots ignores the tagger's tags for 8 hours."
             },
             verdict: {
               type: "string",
@@ -64,9 +88,11 @@ export default {
                   text: {
                     type: "string",
                     description:
-                      "One point, at most 500 characters, plain text (markdown shows literally). No verdict, bullet, URL or citation " +
-                      "mark ([1], ¹) - kbots adds those. A warning: a sentence or two in the tagger's language (that of their focus " +
-                      "text, else of their recent messages, else Ukrainian), naming no consequence - kbots adds the mute notice."
+                      "One point, at most 500 characters, in Telegram HTML: <b>, <i>, <u>, <s>, <code>, <pre> for monospace such as " +
+                      "ASCII art, <blockquote>; write < and & in text as &lt; and &amp;. Never markdown or ```: Telegram shows " +
+                      "them literally. No verdict, bullet, URL or citation mark ([1], ¹) - kbots adds those. A warning: a sentence " +
+                      "or two in the tagger's language (that of their focus text, else of their recent messages, else Ukrainian), " +
+                      "naming no consequence - kbots adds the ignore notice."
                   },
                   sources: {
                     type: "array",

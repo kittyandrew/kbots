@@ -17,17 +17,20 @@ import pytz
 import sentry_sdk
 from aiohttp import web
 from telethon import events, functions, types, utils
+from telethon.extensions.html import HTMLToTelegramParser
 
 # Set on the session every trigger: a config default model loses its #variant and, when unavailable (no ChatGPT
 # login yet), silently falls back to any available model, even a free one. A session model fails the turn instead.
 MODEL = {"providerID": "openai", "id": "gpt-6-luna-fast", "variant": "high"}
 CONTEXT_BEFORE, CONTEXT_AFTER = 15, 5  # message IDs around the replied (or trigger) message sent as chat context
 MAX_POINTS, MAX_CHARS, MAX_SOURCES, MAX_VERDICT = 3, 500, 4, 40
-IGNORE_SECONDS = WARNING_SECONDS = 24 * 60 * 60  # mute length; how long a warning counts
-MUTE_NOTICE = "🙉 Наступні 24 години ігноруватиму твої запити."  # appended to the model's text on a repeat strike
+WARNING_SECONDS = 24 * 60 * 60  # a second strike within this ignores the member
+IGNORE_SECONDS = 8 * 60 * 60  # kbots drops their tags; they can still write in the chat
+IGNORE_NOTICE = "🙉 Наступні 8 годин ігноруватиму твої запити."  # appended to the model's text on a repeat strike
 SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 IMAGE_MIMES, MAX_IMAGES, MAX_IMAGE_BYTES = ("image/jpeg", "image/png", "image/webp"), 4, 10 * 1024 * 1024
-OWN_MARKERS = re.compile(r"(?<=[.!?…»\"])[⁰¹²³⁴⁵⁶⁷⁸⁹ ]*[⁰¹²³⁴⁵⁶⁷⁸⁹]")  # model-typed ¹ after sentences: kbots adds the links
+MARKERS = re.compile(r"(?<=[.!?…»\">])(?:[^\S\n]*[⁰¹²³⁴⁵⁶⁷⁸⁹])+")  # ¹\u2009² after a sentence or tag: kbots' link text
+TAGS = {"b", "i", "u", "s", "code", "pre", "blockquote"}  # the Telegram HTML the reply tool offers the model
 URL = re.compile(r"https?://[^\s/?#\[\]]+\S*")  # urlparse raises on some model-written URLs ("https://[x")
 
 Send = Callable[[int, str, int], Awaitable[None]]  # (chat_id, Telegram HTML, reply_to message_id)
@@ -55,11 +58,11 @@ class ChatMessage:
     links: tuple[str, ...]  # hidden behind text or in the link preview, so the model can read a forward's source
 
     @classmethod
-    def from_telethon(cls, msg) -> "ChatMessage":
+    def from_telethon(cls, msg, own: bool) -> "ChatMessage":
         fwd = msg.forward
         forwarded = None if fwd is None else (fwd.from_name or utils.get_display_name(fwd.chat or fwd.sender))
         media = type(msg.media).__name__.removeprefix("MessageMedia") if msg.media else None
-        text = msg.message or ""
+        text = MARKERS.sub("", msg.message or "") if own else msg.message or ""  # seeing its old ¹ ², the model types them
         urls = [e.url for e in msg.entities or () if isinstance(e, types.MessageEntityTextUrl)]
         urls += [msg.web_preview.url] if msg.web_preview else []
         links = tuple(url for url in dict.fromkeys(urls) if url not in text)
@@ -131,6 +134,32 @@ def build_prompt(
     )
 
 
+class TelegramHTML(HTMLToTelegramParser):
+    """Telethon's own parser, noting what it drops without a word: tags it does not render, tags left open, and input
+    it could not finish parsing ("a<b then" loses everything from "<"; a message ending in "AT&T" posts empty)."""
+
+    def __init__(self):
+        super().__init__()
+        self.unknown: set[str] = set()
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in TAGS:
+            self.unknown.add(tag)
+        super().handle_starttag(tag, attrs)
+
+
+def html_error(text: str) -> str | None:
+    if "```" in text:
+        return "contains ```: Telegram shows markdown literally. Use <pre> for monospace"
+    parser = TelegramHTML()
+    parser.feed(text)
+    if parser.unknown:
+        return f"has <{parser.unknown.pop()}>: use only <{'>, <'.join(sorted(TAGS))}>, a newline for a line break, and &lt; for <"
+    if parser.rawdata or parser._building_entities:
+        return "leaves a tag open, or a literal < or & unescaped: close every tag, write < as &lt; and & as &amp;"
+    return None
+
+
 def render_reply(verdict: str, points: list[tuple[str, list[str]]]) -> str:
     """Telegram HTML: an optional "Verdict:" line, then one "- point" line each; a lone point without a verdict
     stays a plain line. Every point is followed by superscript links, numbered by first appearance."""
@@ -141,7 +170,7 @@ def render_reply(verdict: str, points: list[tuple[str, list[str]]]) -> str:
         for url in dict.fromkeys(sources):
             number = numbers.setdefault(url, len(numbers) + 1)
             refs.append(f'<a href="{html.escape(url)}">{str(number).translate(SUPERSCRIPT)}</a>')
-        lines.append(html.escape(text, quote=False) + "\u2009".join(refs))  # thin space, else ¹² reads as 12
+        lines.append(text + "\u2009".join(refs))  # text is the model's Telegram HTML; thin space, else ¹² reads as 12
     if not verdict and len(lines) == 1:
         return lines[0]
     return (f"{html.escape(verdict, quote=False)}:\n" if verdict else "") + "\n".join(f"- {line}" for line in lines)
@@ -156,11 +185,13 @@ def validate_reply(payload: dict) -> tuple[str, list[tuple[str, list[str]]]]:
         raise Rejected(f"`points` must hold 1 to {MAX_POINTS} items.")
     points = []
     for i, item in enumerate(payload["points"], 1):
-        text, sources = OWN_MARKERS.sub("", item["text"].strip()), item["sources"]  # keep the model's line breaks and spacing
+        text, sources = MARKERS.sub("", item["text"].strip()), item["sources"]  # keep the model's line breaks and spacing
         if not text or len(text) > MAX_CHARS:
             raise Rejected(f"Point {i} has {len(text)} characters; it must have 1 to {MAX_CHARS}. Shorten it.")
-        if "http://" in text or "https://" in text:
+        if "://" in html.unescape(text):  # unescaped, else "&#104;ttp://" slips a link past
             raise Rejected(f"Point {i} contains a URL. Move it to `sources`.")
+        if error := html_error(text):
+            raise Rejected(f"Point {i} {error}.")
         if len(sources) > MAX_SOURCES:
             raise Rejected(f"Point {i} must have at most {MAX_SOURCES} sources.")
         if bad := [url for url in sources if not URL.fullmatch(url)]:
@@ -182,7 +213,7 @@ class Actions:
         # answer it once, and the chat comes from opencode's session id, never from model input. A trigger queued
         # longer than the TTL can no longer be answered, nor one from before a restart.
         self.triggers: cachetools.TTLCache[tuple[str, int], Trigger] = cachetools.TTLCache(1024, ttl=6 * 3600)
-        # str(user_id) -> [last strike, ignored until], unix seconds
+        # str(user_id) -> [last warning, ignored until], unix seconds; ignoring resets the first to 0
         self.strikes: dict[str, list[float]] = json.loads(strikes_fp.read_text()) if strikes_fp.exists() else {}
 
     def is_ignored(self, user_id: int) -> bool:
@@ -218,20 +249,22 @@ class Actions:
         text = points[0]["text"].strip()  # keep line breaks: a playful warning may carry a tiny ASCII drawing
         if not text or len(text) > MAX_CHARS:
             raise Rejected(f"The warning has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
+        if error := html_error(text):
+            raise Rejected(f"The warning {error}.")
         trigger = self.claim(sid, payload["trigger_message_id"])
         uid, now = str(trigger.sender_id), time.time()
         warned = self.strikes.get(uid, [0, 0])[0] > now - WARNING_SECONDS  # every strike restarts the window
-        self.strikes[uid] = [now, now + IGNORE_SECONDS if warned else 0]
+        self.strikes[uid] = [0, now + IGNORE_SECONDS] if warned else [now, 0]  # ignoring clears the warning
         tmp = self.strikes_fp.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.strikes, indent=2))
         os.replace(tmp, self.strikes_fp)
-        # Both go to the tagger, never silently: a mute nobody sees reads as a broken bot. The ⚠️ marks it as a warning.
-        warning = f"⚠️ {text.removeprefix('⚠️').lstrip()}" + (f"\n{MUTE_NOTICE}" if warned else "")
-        await self.send(trigger.chat_id, html.escape(warning), payload["trigger_message_id"])
+        # Both go to the tagger, never silently: ignoring nobody sees reads as a broken bot. The ⚠️ marks it as a warning.
+        warning = f"⚠️ {text.removeprefix('⚠️').lstrip()}" + (f"\n{IGNORE_NOTICE}" if warned else "")
+        await self.send(trigger.chat_id, warning, payload["trigger_message_id"])
         if warned:
-            result = "The sender already had a warning: kbots posted your text with a notice that they are ignored for 24 hours."
+            result = "The sender already had a warning: kbots posted your text with a notice that they are ignored for 8 hours."
         else:
-            result = "Posted your warning. Another one for this sender within 24 hours mutes them for 24 hours."
+            result = "Posted your warning. Another one for this sender within 24 hours makes kbots ignore their tags for 8 hours."
         self.logger.info("Fact-check: warning to %s in %s: %s", uid, trigger.chat_id, result)
         return result
 
@@ -334,7 +367,7 @@ async def init(client, logger, config, **context):
             message_id=msg.id,
             replied_id=msg.reply_to_msg_id,
             focus=focus,
-            window=[ChatMessage.from_telethon(m) for m in window],
+            window=[ChatMessage.from_telethon(m, own=m.sender_id == me.id) for m in window],
             attachments=[f["name"] for f in files],
         )
 
