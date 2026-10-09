@@ -22,9 +22,9 @@
       inputs.uv2nix.follows = "uv2nix";
     };
 
-    # Same reviewed revision as kittyos: V2 has no git tags. No nixpkgs.follows - upstream's nix/hashes.json
+    # Pinned by commit on upstream's v2 branch: V2 has no git tags. No nixpkgs.follows - upstream's nix/hashes.json
     # matches only its own nixpkgs and bun, so following ours breaks the node_modules hash.
-    opencode.url = "github:anomalyco/opencode/01208048dc7742cff8d5085b3ed9048cd0c2f0d5";
+    opencode.url = "github:anomalyco/opencode/229b422bd600df2a2b8d637fec5653dff779827f";
   };
   outputs = {
     self,
@@ -69,11 +69,8 @@
       pes = mkEnv pythonSet "pes-env" {vtraty-pes-bot = [];} "vtraty-pes-bot";
       admin = mkEnv adminPythonSet "admin-env" {vtraty-admin-bot = [];} "vtraty-admin-bot";
       wkhtmltox = mkWkhtmltox pkgs;
-      # Compiled with our Bun, as kittyos does: upstream's flake builds with Bun 1.3.13 but the source pins bun@1.4.2,
-      # and the 1.3.13 bundle fails to load a plugin directory without a tui entry. node_modules keeps upstream's hash.
-      opencodeServer = (opencode.packages.${system}.opencode.override {inherit (pkgs) bun;}).overrideAttrs {
+      opencodeServer = opencode.packages.${system}.opencode.overrideAttrs {
         postPatch = ""; # upstream's downgrades packages/script's Bun range check to a warning; a mismatch must fail
-        postInstall = ""; # runs `opencode completion`, a command V2 lacks, and fails the build
       };
       # The fact-check sidecar: agent and plugin come from pes/opencode, all state from one directory, so neither
       # the image nor a local run picks up a host ~/.claude, ~/.agents or ~/.config/opencode.

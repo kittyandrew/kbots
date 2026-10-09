@@ -34,7 +34,7 @@ cache_fp = data/local-dev/admin/repost_cache.pkl
 
 Use test chats/channels when possible.
 
-For the fact-check module, set `[factcheck]` in the PES config: `chat_ids` to a test chat, a random `opencode_password`, a random 32+ character `callback_token`, `opencode_url = http://127.0.0.1:4096`, and `state_fp = data/local-dev/pes/factcheck_strikes.json`.
+For the fact-check module, set `[factcheck]` in the PES config: `chat_ids` to a test chat, a random `opencode_password`, a random 32+ character `callback_token` and `opencode_url = http://127.0.0.1:4096`.
 
 ## Login
 

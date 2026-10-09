@@ -27,11 +27,45 @@ const readThroughJina = async (url: string, signal: AbortSignal) => {
   return response.ok && !/^Warning: Target URL returned error|CAPTCHA|^Title: Just a moment/m.test(head) ? text : undefined
 }
 
+// For `execute` programs, which get no fetch of their own: http(s) only, since Bun's fetch also reads file:// paths.
+const download = async (url: string, signal: AbortSignal) => {
+  if (!/^https?:$/.test(new URL(url).protocol)) throw new Error("only http(s) URLs")
+  const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]) })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return await response.text()
+}
+
 // Types only: opencode validates input against these schemas before execute. kbots enforces the limits the
 // descriptions state. Never add a `pattern` keyword - it makes opencode skip validation of the whole schema.
 export default {
   id: "kbots.telegram",
   setup: async (ctx) => {
+    // A pinned provider hands its 429 straight to the model, and keyless Parallel locks a server IP out for minutes;
+    // "random" also draws Firecrawl, whose keyless answer opencode reads as no results. Parallel first: longest excerpts.
+    await ctx.websearch.transform((editor) => {
+      editor.add({
+        id: "kbots",
+        name: "Parallel, then Exa, then Tavily",
+        execute: async ({ query }) => {
+          let failure: unknown
+          for (const providerID of ["parallel", "exa", "tavily"]) {
+            try {
+              return (await ctx.websearch.query({ query, providerID })).data.results
+            } catch (error) {
+              failure = error
+            }
+          }
+          throw failure
+        }
+      })
+    })
+    // execute's built-in fetch is Bun's, which also reads file:// paths (/proc/self/environ holds this process's secrets).
+    // A program-level const shadows it, so programs reach the network only through `download`.
+    await ctx.tool.hook("execute.before", (event) => {
+      const input = event.input as { code?: unknown } | undefined
+      if (event.tool !== "execute" || typeof input?.code !== "string") return
+      event.input = { ...input, code: `const fetch = () => { throw new Error("fetch is unavailable; use tools.download") }; ${input.code}` }
+    })
     await ctx.tool.transform((editor) => {
       editor.update("webfetch", (tool) => {
         const direct = tool.execute
@@ -49,27 +83,27 @@ export default {
         }
       })
       editor.add({
+        name: "download",
+        options: { codemode: true }, // only inside `execute`, so a program returns what it filtered, not the whole file
+        description: "GET an http(s) URL and return its body as text, to parse and filter in code.",
+        input: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string" } } },
+        execute: async (input, { signal }) => ({ content: await download((input as { url: string }).url, signal) })
+      })
+      editor.add({
         name: "kbots_reply",
-        options: { codemode: false }, // a codemode tool lives inside `execute`, which the permission lockdown denies
+        options: { codemode: false }, // a direct tool: a program inside `execute` must not be able to post
         description:
-          "Reply in Telegram to one trigger message: an answer, or a warning. kbots posts an optional \"Verdict:\" line, then " +
-          "one \"- point\" line per point followed by its `sources` as numbered superscript links. Returns `sent` or what kbots " +
-          "did, or why kbots rejected the call.",
+          "Reply in Telegram to one trigger message. kbots posts an optional \"Verdict:\" line, then one \"- point\" line " +
+          "per point followed by its `sources` as numbered superscript links. Returns `sent`, or why kbots rejected the call.",
         input: {
           type: "object",
           additionalProperties: false,
-          required: ["trigger_message_id", "reply_to", "warning", "points"],
+          required: ["trigger_message_id", "reply_to", "points"],
           properties: {
             trigger_message_id: { type: "integer", description: "message_id from the <trigger> block you answer." },
             reply_to: {
               type: "integer",
               description: "message_id to post the answer under: the tag or a message this trigger showed you, never the bot's own."
-            },
-            warning: {
-              type: "boolean",
-              description:
-                "true when you decline instead of answering - every refusal is a warning (see your instructions). kbots then posts " +
-                "your one point, without verdict or sources, as a warning under the tag; after a second warning within 24 hours kbots ignores the tagger's tags for 8 hours."
             },
             verdict: {
               type: "string",
@@ -90,9 +124,8 @@ export default {
                     description:
                       "One point, at most 500 characters, in Telegram HTML: <b>, <i>, <u>, <s>, <code>, <pre> for monospace such as " +
                       "ASCII art, <blockquote>; write < and & in text as &lt; and &amp;. Never markdown or ```: Telegram shows " +
-                      "them literally. No verdict, bullet, URL or citation mark ([1], ¹) - kbots adds those. A warning: a sentence " +
-                      "or two in the tagger's language (that of their focus text, else of their recent messages, else Ukrainian), " +
-                      "naming no consequence - kbots adds the ignore notice."
+                      "them literally. Plain keyboard punctuation: - for dashes, ' and \" for apostrophes and quotes, never \u2014, \u2013, \u2019, \u201c\u201d " +
+                      "or \u00ab\u00bb. No verdict, bullet, URL or citation mark ([1], ¹) - kbots adds those."
                   },
                   sources: {
                     type: "array",

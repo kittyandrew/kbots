@@ -1,14 +1,10 @@
 import base64
 import hmac
 import html
-import json
-import os
 import re
-import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import NamedTuple
 
 import aiohttp
@@ -21,12 +17,9 @@ from telethon.extensions.html import HTMLToTelegramParser
 
 # Set on the session every trigger: a config default model loses its #variant and, when unavailable (no ChatGPT
 # login yet), silently falls back to any available model, even a free one. A session model fails the turn instead.
-MODEL = {"providerID": "openai", "id": "gpt-6-luna-fast", "variant": "high"}
+MODEL = {"providerID": "openai", "id": "gpt-6.1-sol-fast", "variant": "medium"}
 CONTEXT_BEFORE, CONTEXT_AFTER = 15, 5  # message IDs around the replied (or trigger) message sent as chat context
 MAX_POINTS, MAX_CHARS, MAX_SOURCES, MAX_VERDICT = 3, 500, 4, 40
-WARNING_SECONDS = 24 * 60 * 60  # a second strike within this ignores the member
-IGNORE_SECONDS = 8 * 60 * 60  # kbots drops their tags; they can still write in the chat
-IGNORE_NOTICE = "🙉 Наступні 8 годин ігноруватиму твої запити."  # appended to the model's text on a repeat strike
 SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 IMAGE_MIMES, MAX_IMAGES, MAX_IMAGE_BYTES = ("image/jpeg", "image/png", "image/webp"), 4, 10 * 1024 * 1024
 MARKERS = re.compile(r"(?<=[.!?…»\">])(?:[^\S\n]*[⁰¹²³⁴⁵⁶⁷⁸⁹])+")  # ¹\u2009² after a sentence or tag: kbots' link text
@@ -203,33 +196,23 @@ def validate_reply(payload: dict) -> tuple[str, list[tuple[str, list[str]]]]:
 
 
 class Actions:
-    """Pending triggers, per-user strikes, and the tool calls the opencode plugin forwards (pes/opencode/plugin/kbots)."""
+    """Pending triggers and the tool calls the opencode plugin forwards (pes/opencode/plugin/kbots)."""
 
-    def __init__(self, strikes_fp: Path, send: Send, logger):
-        self.strikes_fp = strikes_fp
+    def __init__(self, send: Send, logger):
         self.send = send
         self.logger = logger
         # (session, message) -> Trigger. A tool call pops its trigger before it awaits anything, so even parallel calls
         # answer it once, and the chat comes from opencode's session id, never from model input. A trigger queued
         # longer than the TTL can no longer be answered, nor one from before a restart.
         self.triggers: cachetools.TTLCache[tuple[str, int], Trigger] = cachetools.TTLCache(1024, ttl=6 * 3600)
-        # str(user_id) -> [last warning, ignored until], unix seconds; ignoring resets the first to 0
-        self.strikes: dict[str, list[float]] = json.loads(strikes_fp.read_text()) if strikes_fp.exists() else {}
-
-    def is_ignored(self, user_id: int) -> bool:
-        return self.strikes.get(str(user_id), [0, 0])[1] > time.time()
 
     def claim(self, sid: str, message_id: int) -> Trigger:
         """Take the trigger this call answers."""
         if (trigger := self.triggers.pop((sid, message_id), None)) is None:
             raise Rejected(f"No pending trigger {message_id}: it was already answered, or is not a message_id from a <trigger>.")
-        if self.is_ignored(trigger.sender_id):
-            raise Rejected(f"The sender of trigger {message_id} is ignored. Take no action on it.")
         return trigger
 
     async def reply(self, sid: str, payload: dict) -> str:
-        if payload["warning"]:
-            return await self.warn(sid, payload)
         text = render_reply(*validate_reply(payload))  # before claim(): a rejected call may retry
         mid = payload["trigger_message_id"]
         if (pending := self.triggers.get((sid, mid))) and payload["reply_to"] not in pending.reply_targets:
@@ -241,32 +224,6 @@ class Actions:
             self.triggers[(sid, mid)] = trigger
             raise Rejected(f"Telegram refused the reply: {error}") from error
         return "sent"
-
-    async def warn(self, sid: str, payload: dict) -> str:
-        points = payload["points"]
-        if payload.get("verdict") or len(points) != 1 or points[0]["sources"]:
-            raise Rejected("A warning is one point with no verdict and no sources.")
-        text = points[0]["text"].strip()  # keep line breaks: a playful warning may carry a tiny ASCII drawing
-        if not text or len(text) > MAX_CHARS:
-            raise Rejected(f"The warning has {len(text)} characters; it must have 1 to {MAX_CHARS}.")
-        if error := html_error(text):
-            raise Rejected(f"The warning {error}.")
-        trigger = self.claim(sid, payload["trigger_message_id"])
-        uid, now = str(trigger.sender_id), time.time()
-        warned = self.strikes.get(uid, [0, 0])[0] > now - WARNING_SECONDS  # every strike restarts the window
-        self.strikes[uid] = [0, now + IGNORE_SECONDS] if warned else [now, 0]  # ignoring clears the warning
-        tmp = self.strikes_fp.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.strikes, indent=2))
-        os.replace(tmp, self.strikes_fp)
-        # Both go to the tagger, never silently: ignoring nobody sees reads as a broken bot. The ⚠️ marks it as a warning.
-        warning = f"⚠️ {text.removeprefix('⚠️').lstrip()}" + (f"\n{IGNORE_NOTICE}" if warned else "")
-        await self.send(trigger.chat_id, warning, payload["trigger_message_id"])
-        if warned:
-            result = "The sender already had a warning: kbots posted your text with a notice that they are ignored for 8 hours."
-        else:
-            result = "Posted your warning. Another one for this sender within 24 hours makes kbots ignore their tags for 8 hours."
-        self.logger.info("Fact-check: warning to %s in %s: %s", uid, trigger.chat_id, result)
-        return result
 
     def app(self, token: str) -> web.Application:
         async def callback(request: web.Request) -> web.Response:
@@ -309,7 +266,7 @@ async def init(client, logger, config, **context):
         await client.send_message(chat_id, text, reply_to=reply_to, parse_mode="html", link_preview=False)
 
     # Callbacks first: if the port is taken, init fails before any tag can be forwarded.
-    actions = Actions(Path(config.get("factcheck", "state_fp")), send, logger)
+    actions = Actions(send, logger)
     runner = web.AppRunner(actions.app(callback_token))
     await runner.setup()
     host, port = config.get("factcheck", "callback_host"), config.getint("factcheck", "callback_port")
@@ -340,10 +297,6 @@ async def init(client, logger, config, **context):
     @client.on(events.NewMessage(chats=chat_ids, func=lambda e: my_mentions(e.message)))
     async def on_tag(event):
         msg = event.message
-        if actions.is_ignored(event.sender_id):
-            logger.info("Fact-check: ignoring tag from %s", event.sender_id)
-            return await react(event.chat_id, msg.id, "🙉")  # Telegram's reaction set has no 🚫 or 🔇
-
         anchor = msg.reply_to_msg_id or msg.id
         ids = (i for i in range(max(1, anchor - CONTEXT_BEFORE), anchor + CONTEXT_AFTER + 1) if i != msg.id)
         window = await fetch(event.chat_id, ids)

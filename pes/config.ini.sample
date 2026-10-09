@@ -38,5 +38,3 @@ callback_host = 127.0.0.1
 callback_port = 8765
 # At least 32 characters; must equal the sidecar's KBOTS_CALLBACK_TOKEN.
 callback_token =
-# Per-user warnings and ignore deadlines.
-state_fp = data/factcheck_strikes.json
