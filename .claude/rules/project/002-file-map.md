@@ -39,7 +39,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 |------|---------|
 | `pes/opencode/opencode.jsonc` | Sidecar opencode config: default agent, permission lockdown, websearch. |
 | `pes/opencode/agent/factcheck.md` | Agent system prompt: rules, fact-check procedure, answer format, abuse policy. |
-| `pes/opencode/plugin/kbots/server.ts` | `kbots_reply` tool that calls back into the bot, the guarded codemode `download`, and the web search chain. |
+| `pes/opencode/plugin/kbots/server.ts` | `kbots_reply` tool that calls back into the bot and is forced until called, the guarded codemode `download`, the Jina `webfetch` fallback, and the web search chain. |
 | `pes/evals/factcheck.py` | Live behavior evals against the real sidecar with a fake Telegram. |
 
 ## Admin Bot: `admin/src/`

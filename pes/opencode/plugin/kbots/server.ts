@@ -59,6 +59,13 @@ export default {
         }
       })
     })
+    // Without forcing, the model can stop after its research without replying. Any kbots_reply call ends the forcing, a
+    // rejected one too: kbots rejects every call for a trigger it no longer holds.
+    await ctx.session.hook("context", (event) => {
+      const turn = event.messages.slice(event.messages.findLastIndex((m) => m.role === "user") + 1) // after the trigger
+      if (turn.some((m) => m.content.some((part) => part.type === "tool-call" && part.name === "kbots_reply"))) return
+      event.options.allowedTools = { toolNames: Object.keys(event.tools), mode: "required" } // OpenAI tool_choice "required"
+    })
     // execute's built-in fetch is Bun's, which also reads file:// paths (/proc/self/environ holds this process's secrets).
     // A program-level const shadows it, so programs reach the network only through `download`.
     await ctx.tool.hook("execute.before", (event) => {
