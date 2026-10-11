@@ -39,7 +39,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 |------|---------|
 | `pes/opencode/opencode.jsonc` | Sidecar opencode config: default agent, permission lockdown, websearch. |
 | `pes/opencode/agent/factcheck.md` | Agent system prompt: rules, fact-check procedure, answer format, abuse policy. |
-| `pes/opencode/plugin/kbots/server.ts` | `kbots_reply` tool that calls back into the bot and is forced until called, the guarded codemode `download`, the Jina `webfetch` fallback, and the web search chain. |
+| `pes/opencode/plugin/kbots/server.ts` | `kbots_reply` tool that calls back into the bot and is forced until called, the guarded codemode `download`, the Jina `webfetch` fallback, the keyless web search rotation, and the request hook that adds ChatGPT's hosted `web_search`. |
 | `pes/evals/factcheck.py` | Live behavior evals against the real sidecar with a fake Telegram. |
 
 ## Admin Bot: `admin/src/`
@@ -74,7 +74,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 | `pes/config.ini.sample` | PES config template. |
 | `admin/config.ini.sample` | Admin config template. |
 | `.envrc` | direnv: `use flake`, then loads `.env` if present. |
-| `.env.sample` | Optional local env vars: Sentry, and `PARALLEL_API_KEY` for the fact-check sidecar. |
+| `.env.sample` | Optional local env vars: Sentry, and the fact-check sidecar's search provider keys. |
 | `docs/observability.md` | Sentry integration and breadcrumb conventions. |
 | `docs/factcheck.md` | Fact-check design decisions, ChatGPT login, security, evals and known limits. |
 

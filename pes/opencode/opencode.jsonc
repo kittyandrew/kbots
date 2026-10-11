@@ -18,7 +18,7 @@
   ],
 
   // Without a provider, websearch opens a consent form and the unattended turn blocks. "kbots" is the plugin's
-  // keyless chain: Parallel, which returns the most article text, then Exa and Tavily when it fails.
+  // rotation over the keyless providers.
   "websearch": { "provider": "kbots" },
 
   "snapshots": false // sessions sit in the server's cwd; from a git checkout (local runs, evals) every step snapshots it

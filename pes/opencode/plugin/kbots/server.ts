@@ -40,19 +40,32 @@ const download = async (url: string, signal: AbortSignal) => {
 export default {
   id: "kbots.telegram",
   setup: async (ctx) => {
-    // A pinned provider hands its 429 straight to the model, and keyless Parallel locks a server IP out for minutes;
-    // "random" also draws Firecrawl, whose keyless answer opencode reads as no results. Parallel first: longest excerpts.
+    // Keyless tiers rate-limit per IP (Parallel locks it out for minutes, Tavily has a daily cap), so searches rotate
+    // over the providers not resting; each failure in a row doubles a provider's rest, 10 minutes up to 6 hours. When
+    // all rest, the one due back first is probed. Firecrawl has no keyless access; an env key (PARALLEL_API_KEY,
+    // EXA_API_KEY, ...) raises a provider's limits, and opencode reads it.
+    const providers = ["parallel", "exa", "tavily", "tinyfish", ...(process.env.FIRECRAWL_API_KEY ? ["firecrawl"] : [])]
+    const resting = new Map<string, { failures: number; until: number }>()
+    let searches = 0
     await ctx.websearch.transform((editor) => {
       editor.add({
         id: "kbots",
-        name: "Parallel, then Exa, then Tavily",
+        name: "Keyless providers in rotation",
         execute: async ({ query }) => {
+          const rotated = providers.map((_, i) => providers[(searches + i) % providers.length])
+          searches++
+          const ready = rotated.filter((id) => (resting.get(id)?.until ?? 0) <= Date.now())
+          const dueFirst = rotated.reduce((a, b) => ((resting.get(a)?.until ?? 0) <= (resting.get(b)?.until ?? 0) ? a : b))
           let failure: unknown
-          for (const providerID of ["parallel", "exa", "tavily"]) {
+          for (const providerID of ready.length ? ready : [dueFirst]) {
             try {
-              return (await ctx.websearch.query({ query, providerID })).data.results
+              const { results } = (await ctx.websearch.query({ query, providerID })).data
+              resting.delete(providerID)
+              return results
             } catch (error) {
               failure = error
+              const failures = (resting.get(providerID)?.failures ?? 0) + 1
+              resting.set(providerID, { failures, until: Date.now() + Math.min(600_000 * 2 ** (failures - 1), 21_600_000) })
             }
           }
           throw failure
@@ -66,6 +79,20 @@ export default {
       if (turn.some((m) => m.content.some((part) => part.type === "tool-call" && part.name === "kbots_reply"))) return
       event.options.allowedTools = { toolNames: Object.keys(event.tools), mode: "required" } // OpenAI tool_choice "required"
     })
+    // OpenAI's hosted web_search comes with the ChatGPT plan and opens pages that answer this server 403. opencode parses
+    // its calls but cannot request the tool, so it joins each agent step's websocket request. A session that fell back to
+    // HTTP goes without it until the sidecar restarts, and the `websearch` above stays for that.
+    await ctx.session.hook(
+      "experimental.ws.send",
+      (event) => {
+        if (event.kind !== "primary") return // skips compaction, the only other request on the socket
+        const frame = JSON.parse(event.frame)
+        frame.tools = [...(frame.tools ?? []), { type: "web_search" }]
+        if (frame.tool_choice?.type === "allowed_tools") frame.tool_choice.tools.push({ type: "web_search" }) // else the forcing locks it out
+        event.frame = JSON.stringify(frame)
+      },
+      { providerID: "openai" } // the only provider that knows this tool
+    )
     // execute's built-in fetch is Bun's, which also reads file:// paths (/proc/self/environ holds this process's secrets).
     // A program-level const shadows it, so programs reach the network only through `download`.
     await ctx.tool.hook("execute.before", (event) => {
@@ -115,12 +142,13 @@ export default {
             verdict: {
               type: "string",
               description:
-                "True, false, misleading, partly true or unverified, in the reply language (\"Неправда\"). " +
+                "True, false, misleading, partly true, baseless (nothing backs it after scrutiny) or unverified (too new or obscure to check), " +
+                "in the reply language (\"Неправда\"). " +
                 "Omit when there is no claim to judge, such as an opinion or an open question."
             },
             points: {
               type: "array",
-              description: "1 to 3 points.",
+              description: "1 to 3 points; add one only for a new fact.",
               items: {
                 type: "object",
                 additionalProperties: false,
@@ -129,7 +157,7 @@ export default {
                   text: {
                     type: "string",
                     description:
-                      "One point, at most 500 characters, in Telegram HTML: <b>, <i>, <u>, <s>, <code>, <pre> for monospace such as " +
+                      "One point, at most 500 characters, usually far fewer, in Telegram HTML: <b>, <i>, <u>, <s>, <code>, <pre> for monospace such as " +
                       "ASCII art, <blockquote>; write < and & in text as &lt; and &amp;. Never markdown or ```: Telegram shows " +
                       "them literally. Plain keyboard punctuation: - for dashes, ' and \" for apostrophes and quotes, never \u2014, \u2013, \u2019, \u201c\u201d " +
                       "or \u00ab\u00bb. No verdict, bullet, URL or citation mark ([1], ¹) - kbots adds those."

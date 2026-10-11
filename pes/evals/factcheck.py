@@ -52,7 +52,7 @@ class Tag:
     expect: Literal["answer", "clapback"] = "answer"  # a researched answer, or a clap back with no verdict and no sources
     lang: Literal["uk", "en"] | None = None  # script the reply must be written in
     target: Literal["claim", "tagger"] | None = None  # where the answer must land: replied message or tag
-    research: bool = True  # the answer must follow at least one websearch or webfetch; off for pure-logic answers
+    research: bool = True  # the answer must follow at least one search, webfetch or execute call; off for pure-logic answers
     forbid: list[str] = field(default_factory=list)  # substrings no posted text may contain, in any case
 
 
@@ -325,11 +325,11 @@ async def run_case(
     for part in (part for message in transcript["data"] for part in message.get("content") or []):
         if part.get("type") != "tool":
             continue
-        researched |= part["name"] in ("websearch", "webfetch", "execute")
+        researched |= part["name"] in ("web_search", "websearch", "webfetch", "execute")
         if part["name"] == "kbots_reply" and (part["state"].get("content") or [{}])[0].get("text") == "sent":
             n = part["state"]["input"]["trigger_message_id"] - 900
             if case.tags[n].expect == "answer" and case.tags[n].research and not researched:
-                failures.append(f"tag {n}: answered without a websearch, webfetch or execute call")
+                failures.append(f"tag {n}: answered without a search, webfetch or execute call")
             researched = False
     posted = [f"[{reply_to}] {text}" for reply_to, text in sent[chat_id]]
     return failures, posted
