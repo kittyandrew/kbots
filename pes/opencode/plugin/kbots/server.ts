@@ -72,11 +72,23 @@ export default {
         }
       })
     })
-    // Without forcing, the model can stop after its research without replying. Any kbots_reply call ends the forcing, a
-    // rejected one too: kbots rejects every call for a trigger it no longer holds.
+    // Without forcing, the model can stop after its research without replying. Forcing lasts until every trigger in the
+    // context has a kbots_reply call, a rejected one too. Per trigger, not per turn: a turn a restart cut off resumes
+    // together with the triggers queued behind it, and the model answered only the newest.
     await ctx.session.hook("context", (event) => {
-      const turn = event.messages.slice(event.messages.findLastIndex((m) => m.role === "user") + 1) // after the trigger
-      if (turn.some((m) => m.content.some((part) => part.type === "tool-call" && part.name === "kbots_reply"))) return
+      const triggers = new Set<number>()
+      const called = new Set<unknown>()
+      for (const message of event.messages) {
+        for (const part of message.content) {
+          if (message.role === "user" && part.type === "text" && part.text.startsWith("<trigger>\n")) {
+            const id = /^message_id: (\d+)$/m.exec(part.text.slice(0, part.text.indexOf("</trigger>")))?.[1] // kbots' block, not chat text
+            if (id) triggers.add(Number(id))
+          }
+          if (part.type === "tool-call" && part.name === "kbots_reply")
+            called.add((part.input as { trigger_message_id?: unknown } | undefined)?.trigger_message_id)
+        }
+      }
+      if ([...triggers].every((id) => called.has(id))) return
       event.options.allowedTools = { toolNames: Object.keys(event.tools), mode: "required" } // OpenAI tool_choice "required"
     })
     // OpenAI's hosted web_search comes with the ChatGPT plan and opens pages that answer this server 403. opencode parses

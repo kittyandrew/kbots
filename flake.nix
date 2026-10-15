@@ -76,7 +76,7 @@
       # the image nor a local run picks up a host ~/.claude, ~/.agents or ~/.config/opencode.
       pes-opencode = pkgs.writeShellApplication {
         name = "pes-opencode";
-        runtimeInputs = [pkgs.coreutils];
+        runtimeInputs = [pkgs.coreutils pkgs.jq];
         text = ''
           : "''${PES_OPENCODE_STATE:?set to the sidecar state directory}"
           : "''${OPENCODE_SERVER_PASSWORD:?set the password kbots uses for Basic auth}"
@@ -85,10 +85,18 @@
           PES_OPENCODE_STATE=$(realpath -m "$PES_OPENCODE_STATE") # local runs pass a relative path; keep HOME and XDG absolute
           export HOME="$PES_OPENCODE_STATE/home" XDG_DATA_HOME="$PES_OPENCODE_STATE/data" # data: the DB, ChatGPT login included
           export XDG_CACHE_HOME="$PES_OPENCODE_STATE/cache" XDG_STATE_HOME="$PES_OPENCODE_STATE/state"
-          export OPENCODE_CONFIG_DIR=${./pes/opencode} OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_FILEWATCHER=1
+          # --service resumes turns a restart cut off. It reads its password from service-<channel>.json in the config
+          # dir (upstream's Nix channel is prod), never from the env, so the agent and plugin are copied to a writable one.
+          config="$PES_OPENCODE_STATE/config"
+          rm -rf "$config"
+          mkdir -p "$config" "$HOME" # --service chdirs to HOME
+          cp -r --no-preserve=mode ${./pes/opencode}/. "$config"
+          (umask 077 && jq -n '{password: env.OPENCODE_SERVER_PASSWORD}' > "$config/service-prod.json")
+          unset OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD # the file has it; keep it out of /proc/self/environ
+          export OPENCODE_CONFIG_DIR="$config" OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_FILEWATCHER=1
           # Failed turns are logged only by opencode ("Failed to drain Session"); else they land in a file in the state dir.
           export OPENCODE_PRINT_LOGS=1 OPENCODE_LOG_LEVEL=WARN
-          exec ${lib.getExe opencodeServer} serve "$@"
+          exec ${lib.getExe opencodeServer} serve --service "$@"
         '';
       };
     in {

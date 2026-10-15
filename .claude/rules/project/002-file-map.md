@@ -39,7 +39,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 |------|---------|
 | `pes/opencode/opencode.jsonc` | Sidecar opencode config: default agent, permission lockdown, websearch. |
 | `pes/opencode/agent/factcheck.md` | Agent system prompt: rules, fact-check procedure, answer format, abuse policy. |
-| `pes/opencode/plugin/kbots/server.ts` | `kbots_reply` tool that calls back into the bot and is forced until called, the guarded codemode `download`, the Jina `webfetch` fallback, the keyless web search rotation, and the request hook that adds ChatGPT's hosted `web_search`. |
+| `pes/opencode/plugin/kbots/server.ts` | `kbots_reply` tool that calls back into the bot and is forced until every trigger has a call, the guarded codemode `download`, the Jina `webfetch` fallback, the keyless web search rotation, and the request hook that adds ChatGPT's hosted `web_search`. |
 | `pes/evals/factcheck.py` | Live behavior evals against the real sidecar with a fake Telegram. |
 
 ## Admin Bot: `admin/src/`

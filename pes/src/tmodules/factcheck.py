@@ -4,7 +4,7 @@ import html
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 import aiohttp
@@ -25,8 +25,10 @@ IMAGE_MIMES, MAX_IMAGES, MAX_IMAGE_BYTES = ("image/jpeg", "image/png", "image/we
 MARKERS = re.compile(r"(?<=[.!?…»\">])(?:[^\S\n]*[⁰¹²³⁴⁵⁶⁷⁸⁹])+")  # ¹\u2009² after a sentence or tag: kbots' link text
 TAGS = {"b", "i", "u", "s", "code", "pre", "blockquote"}  # the Telegram HTML the reply tool offers the model
 URL = re.compile(r"https?://[^\s/?#\[\]]+\S*")  # urlparse raises on some model-written URLs ("https://[x")
+MAX_TRIGGER_AGE = timedelta(hours=6)  # an older tag cannot be answered; answers took at most 7 minutes in production
 
 Send = Callable[[int, str, int], Awaitable[None]]  # (chat_id, Telegram HTML, reply_to message_id)
+Lookup = Callable[[str, int], Awaitable["Trigger | None"]]  # (opencode session, message_id) -> the tag, if it is one
 
 
 class Rejected(Exception):
@@ -35,7 +37,6 @@ class Rejected(Exception):
 
 class Trigger(NamedTuple):
     chat_id: int
-    sender_id: int
     reply_targets: frozenset[int]  # the tag plus the messages it showed the model, minus the bot's own
 
 
@@ -196,33 +197,38 @@ def validate_reply(payload: dict) -> tuple[str, list[tuple[str, list[str]]]]:
 
 
 class Actions:
-    """Pending triggers and the tool calls the opencode plugin forwards (pes/opencode/plugin/kbots)."""
+    """The tool calls the opencode plugin forwards (pes/opencode/plugin/kbots). Each call is checked against Telegram
+    through `lookup`, never against a record of what was forwarded, so a restart of either side loses no trigger."""
 
-    def __init__(self, send: Send, logger):
+    def __init__(self, lookup: Lookup, send: Send, logger):
+        self.lookup = lookup
         self.send = send
         self.logger = logger
-        # (session, message) -> Trigger. A tool call pops its trigger before it awaits anything, so even parallel calls
-        # answer it once, and the chat comes from opencode's session id, never from model input. A trigger queued
-        # longer than the TTL can no longer be answered, nor one from before a restart.
-        self.triggers: cachetools.TTLCache[tuple[str, int], Trigger] = cachetools.TTLCache(1024, ttl=6 * 3600)
-
-    def claim(self, sid: str, message_id: int) -> Trigger:
-        """Take the trigger this call answers."""
-        if (trigger := self.triggers.pop((sid, message_id), None)) is None:
-            raise Rejected(f"No pending trigger {message_id}: it was already answered, or is not a message_id from a <trigger>.")
-        return trigger
+        # (session, message) of the triggers answered. A call marks its trigger before it awaits anything, so even
+        # parallel calls answer it once. Memory only: a call repeated across a PES restart posts again.
+        self.answered: cachetools.TTLCache[tuple[str, int], bool] = cachetools.TTLCache(4096, ttl=MAX_TRIGGER_AGE.total_seconds())
 
     async def reply(self, sid: str, payload: dict) -> str:
-        text = render_reply(*validate_reply(payload))  # before claim(): a rejected call may retry
-        mid = payload["trigger_message_id"]
-        if (pending := self.triggers.get((sid, mid))) and payload["reply_to"] not in pending.reply_targets:
-            raise Rejected(f"`reply_to` {payload['reply_to']} is not a message_id this trigger showed you, or is the bot's own.")
-        trigger = self.claim(sid, mid)
+        text = render_reply(*validate_reply(payload))
+        key = (sid, payload["trigger_message_id"])
+        if key in self.answered:
+            raise Rejected(f"Trigger {key[1]} was already answered.")
+        self.answered[key] = True
         try:
-            await self.send(trigger.chat_id, text, payload["reply_to"])
-        except Exception as error:  # nothing was posted: keep the trigger answerable and tell the model why
-            self.triggers[(sid, mid)] = trigger
-            raise Rejected(f"Telegram refused the reply: {error}") from error
+            if (trigger := await self.lookup(*key)) is None:
+                hours = MAX_TRIGGER_AGE // timedelta(hours=1)
+                raise Rejected(f"{key[1]} is not a message_id from a <trigger> of the last {hours} hours in this chat.")
+            if payload["reply_to"] not in trigger.reply_targets:
+                raise Rejected(
+                    f"`reply_to` {payload['reply_to']} is not a message_id this trigger showed you, or is the bot's own."
+                )
+            try:
+                await self.send(trigger.chat_id, text, payload["reply_to"])
+            except Exception as error:
+                raise Rejected(f"Telegram refused the reply: {error}") from error
+        except BaseException:
+            self.answered.pop(key, None)  # nothing was posted: the model may retry
+            raise
         return "sent"
 
     def app(self, token: str) -> web.Application:
@@ -239,6 +245,10 @@ class Actions:
         app = web.Application()
         app.router.add_post("/opencode/reply", callback)
         return app
+
+
+def session_id(chat_id: int) -> str:
+    return f"ses_tg_{chat_id}"  # opencode requires the "ses" prefix; create() with a known id returns that session
 
 
 async def queue_prompt(opencode: aiohttp.ClientSession, sid: str, title: str, text: str, files: Sequence[dict] = ()):
@@ -262,19 +272,8 @@ async def init(client, logger, config, **context):
     if len(callback_token) < 32:
         raise ValueError("factcheck.callback_token must be at least 32 characters")
 
-    async def send(chat_id: int, text: str, reply_to: int):
-        await client.send_message(chat_id, text, reply_to=reply_to, parse_mode="html", link_preview=False)
-
-    # Callbacks first: if the port is taken, init fails before any tag can be forwarded.
-    actions = Actions(send, logger)
-    runner = web.AppRunner(actions.app(callback_token))
-    await runner.setup()
-    host, port = config.get("factcheck", "callback_host"), config.getint("factcheck", "callback_port")
-    await web.TCPSite(runner, host, port).start()
-
-    auth = {"Authorization": aiohttp.encode_basic_auth("opencode", config.get("factcheck", "opencode_password"))}
-    opencode = aiohttp.ClientSession(base_url=config.get("factcheck", "opencode_url"), headers=auth, raise_for_status=True)
     me = await client.get_me()
+    sessions = {session_id(c): c for c in chat_ids}
 
     def my_mentions(msg) -> list[str]:
         return [
@@ -294,19 +293,47 @@ async def init(client, logger, config, **context):
     async def fetch(chat_id: int, ids) -> list:
         return [m for m in await client.get_messages(chat_id, ids=list(ids)) if m is not None]
 
+    async def window(chat_id: int, msg) -> list:
+        """The messages a tag shows the model: those around its replied message (or itself), without the tag."""
+        anchor = msg.reply_to_msg_id or msg.id
+        found = await fetch(
+            chat_id, (i for i in range(max(1, anchor - CONTEXT_BEFORE), anchor + CONTEXT_AFTER + 1) if i != msg.id)
+        )
+        # One hop out: a message the window replies to is fetched even when it is older than the window.
+        if parents := {m.reply_to_msg_id for m in found if m.reply_to_msg_id} - {m.id for m in found} - {msg.id}:
+            found = sorted(found + await fetch(chat_id, parents), key=lambda m: m.id)
+        return found
+
+    async def lookup(sid: str, message_id: int) -> Trigger | None:
+        if (chat_id := sessions.get(sid)) is None:
+            return None
+        msg = next(iter(await fetch(chat_id, [message_id])), None)
+        if msg is None or msg.out or not my_mentions(msg) or msg.date < datetime.now(UTC) - MAX_TRIGGER_AGE:
+            return None
+        shown = {m.id for m in await window(chat_id, msg) if m.sender_id != me.id}  # never answer under the bot's own message
+        return Trigger(chat_id, frozenset(shown | {msg.id}))
+
+    async def send(chat_id: int, text: str, reply_to: int):
+        await client.send_message(chat_id, text, reply_to=reply_to, parse_mode="html", link_preview=False)
+
+    # Callbacks first: if the port is taken, init fails before any tag can be forwarded.
+    actions = Actions(lookup, send, logger)
+    runner = web.AppRunner(actions.app(callback_token))
+    await runner.setup()
+    host, port = config.get("factcheck", "callback_host"), config.getint("factcheck", "callback_port")
+    await web.TCPSite(runner, host, port).start()
+
+    auth = {"Authorization": aiohttp.encode_basic_auth("opencode", config.get("factcheck", "opencode_password"))}
+    opencode = aiohttp.ClientSession(base_url=config.get("factcheck", "opencode_url"), headers=auth, raise_for_status=True)
+
     @client.on(events.NewMessage(chats=chat_ids, func=lambda e: my_mentions(e.message)))
     async def on_tag(event):
         msg = event.message
-        anchor = msg.reply_to_msg_id or msg.id
-        ids = (i for i in range(max(1, anchor - CONTEXT_BEFORE), anchor + CONTEXT_AFTER + 1) if i != msg.id)
-        window = await fetch(event.chat_id, ids)
-        # One hop out: a message the window replies to is fetched even when it is older than the window.
-        if parents := {m.reply_to_msg_id for m in window if m.reply_to_msg_id} - {m.id for m in window} - {msg.id}:
-            window = sorted(window + await fetch(event.chat_id, parents), key=lambda m: m.id)
+        shown = await window(event.chat_id, msg)
         # Images of the checked message and its album, then the tagger's own screenshot; the rest stay placeholders.
-        replied = next((m for m in window if m.id == msg.reply_to_msg_id), None)
+        replied = next((m for m in shown if m.id == msg.reply_to_msg_id), None)
         album = [
-            m for m in window if replied and (m.id == replied.id or (replied.grouped_id and m.grouped_id == replied.grouped_id))
+            m for m in shown if replied and (m.id == replied.id or (replied.grouped_id and m.grouped_id == replied.grouped_id))
         ]
         files = await attach_images([*album, msg], logger)
         focus = msg.message
@@ -320,15 +347,12 @@ async def init(client, logger, config, **context):
             message_id=msg.id,
             replied_id=msg.reply_to_msg_id,
             focus=focus,
-            window=[ChatMessage.from_telethon(m, own=m.sender_id == me.id) for m in window],
+            window=[ChatMessage.from_telethon(m, own=m.sender_id == me.id) for m in shown],
             attachments=[f["name"] for f in files],
         )
 
-        sid = f"ses_tg_{event.chat_id}"  # opencode requires the "ses" prefix; create() with a known id returns that session
+        sid = session_id(event.chat_id)
         sentry_sdk.add_breadcrumb(category="factcheck", message=f"Forwarding trigger {msg.id} to {sid}")
-        shown = {m.id for m in window if m.sender_id != me.id}  # never answer under the bot's own message
-        # Before the prompt, which may run at once.
-        actions.triggers[(sid, msg.id)] = Trigger(event.chat_id, event.sender_id, frozenset(shown | {msg.id}))
         await queue_prompt(opencode, sid, f"Telegram: {chat}", prompt, files)
 
         await react(event.chat_id, msg.id, "👀")

@@ -148,6 +148,11 @@ CASES = [
         [Tag(ALICE, 101, focus="ти пропустив мій запит", lang="uk")],
     ),
     Case(
+        "nudge-for-another-member",
+        chat((BORYS, "@vtraty_pes_bot скільки років Києву?"), (ALICE, "бот думає")),
+        [Tag(ALICE, 100, focus="тебе чекають", lang="uk", target="claim")],
+    ),
+    Case(
         "rank-the-chat",
         chat((BORYS, "ну шо там"), (ALICE, "та нічого, думаю про ціни на газ")),
         [
@@ -276,15 +281,13 @@ async def wait(opencode: aiohttp.ClientSession, sid: str) -> str | None:
         return (await response.json())["data"].get("outcome")
 
 
-async def run_case(
-    case: Case, chat_id: int, opencode: aiohttp.ClientSession, actions: Actions, calls: dict, sent: dict, out: Path
-):
+async def run_case(case: Case, chat_id: int, opencode: aiohttp.ClientSession, triggers: dict, calls: dict, sent: dict, out: Path):
     sid = f"ses_eval_{case.name}_{secrets.token_hex(3)}"
     failures = []
     for n, tag in enumerate(case.tags):
         message_id = 900 + n
         shown = {m.id for m in case.window if m.author != BOT}
-        actions.triggers[(sid, message_id)] = Trigger(chat_id, hash((case.name, tag.sender)), frozenset(shown | {message_id}))
+        triggers[(sid, message_id)] = Trigger(chat_id, frozenset(shown | {message_id}))
         prompt = build_prompt(
             now=NOW,
             chat=f"Втрати чат (id {chat_id})",
@@ -355,7 +358,12 @@ async def main(args):
         calls.setdefault(key, []).append((response.status, response.text))
         return response
 
-    actions = Actions(send, logging.getLogger("eval"))
+    triggers: dict[tuple[str, int], Trigger] = {}  # (session, message) -> the tag the fake Telegram holds
+
+    async def lookup(sid: str, message_id: int) -> Trigger | None:
+        return triggers.get((sid, message_id))
+
+    actions = Actions(lookup, send, logging.getLogger("eval"))
     app = actions.app(token)
     app.middlewares.append(record)
     runner = web.AppRunner(app)
@@ -389,7 +397,7 @@ async def main(args):
         async def bounded(i: int, case: Case):
             async with limit:
                 try:
-                    return await run_case(case, -1000 - i, opencode, actions, calls, sent, out)
+                    return await run_case(case, -1000 - i, opencode, triggers, calls, sent, out)
                 except Exception as error:
                     return [repr(error)], []
 
