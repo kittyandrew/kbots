@@ -121,7 +121,7 @@ class Telemetry:
 
         app = web.Application()
         app.router.add_get("/metrics", metrics)
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, access_log=None)  # else every scrape logs a line, 2880 a day
         await runner.setup()
         await web.TCPSite(runner, host, port).start()
 
