@@ -1,6 +1,7 @@
 // Forwards the agent's Telegram replies to the PES bot (tmodules/factcheck.py). kbots owns the bot token,
 // validates every call and decides the effect; a rejection comes back as text the model can act on.
 import type { Plugin } from "@opencode/plugin/promise/plugin"
+import { Telemetry, telemetry } from "./telemetry"
 
 const { KBOTS_CALLBACK_URL: callbackUrl, KBOTS_CALLBACK_TOKEN: callbackToken } = process.env // required by flake.nix pes-opencode
 
@@ -40,6 +41,8 @@ const download = async (url: string, signal: AbortSignal) => {
 export default {
   id: "kbots.telegram",
   setup: async (ctx) => {
+    const stats = telemetry(ctx)
+    await ctx.rpc.register(Telemetry, { snapshot: stats.snapshot })
     // Keyless tiers rate-limit per IP (Parallel locks it out for minutes, Tavily has a daily cap), so searches rotate
     // over the providers not resting; each failure in a row doubles a provider's rest, 10 minutes up to 6 hours. When
     // all rest, the one due back first is probed. Firecrawl has no keyless access; an env key (PARALLEL_API_KEY,
@@ -61,9 +64,11 @@ export default {
             try {
               const { results } = (await ctx.websearch.query({ query, providerID })).data
               resting.delete(providerID)
+              stats.searched(providerID, "ok")
               return results
             } catch (error) {
               failure = error
+              stats.searched(providerID, "failed")
               const failures = (resting.get(providerID)?.failures ?? 0) + 1
               resting.set(providerID, { failures, until: Date.now() + Math.min(600_000 * 2 ** (failures - 1), 21_600_000) })
             }
@@ -122,6 +127,7 @@ export default {
             const { url, format } = input as { url: string; format: string }
             // Returned, not thrown: a throw here reached the model as some other parallel call's failure.
             const read = await readThroughJina(url, context.signal).catch(() => undefined)
+            stats.readThroughJina(read ? "ok" : "failed")
             const text = read ?? `${url} did not open (${String(error).slice(0, 200)}).`
             const output = { url, contentType: "text/markdown", format, output: text }
             return { output, content: text, metadata: { contentType: output.contentType } }
@@ -187,5 +193,6 @@ export default {
         execute: async (input, { sessionID, signal }) => ({ content: await forward(sessionID, input, signal) })
       })
     })
+    return stats.stop
   }
 } satisfies Plugin

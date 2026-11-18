@@ -34,7 +34,7 @@ To add a module, create a new file with `async def init(...)`. Keep bot-specific
 
 ## PES Fact-Check Sidecar
 
-`tmodules/factcheck.py` forwards tags in `[factcheck] chat_ids` to the `pes-opencode` sidecar, one opencode session per chat. The sidecar's plugin calls back into the bot, which validates and posts. The prompt and plugin live in `pes/opencode/`; the model is `MODEL` in `factcheck.py`. Read `docs/factcheck.md` before changing any of them, and run `pes/evals/factcheck.py` after.
+`tmodules/factcheck.py` forwards tags in `[factcheck] chat_ids` to the `pes-opencode` sidecar, one opencode session per chat. The sidecar's plugin calls back into the bot, which validates and posts. The prompt and plugin live in `pes/opencode/`; the model is `MODEL` in `factcheck.py`. The plugin also counts what happens inside opencode, and the bot serves it with its own counts (`telemetry.py`, `docs/factcheck.md` Monitoring). Read `docs/factcheck.md` before changing any of them, and run `pes/evals/factcheck.py` after.
 
 ## Admin Single-Account Model
 

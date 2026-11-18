@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hmac
 import html
@@ -12,8 +13,11 @@ import cachetools
 import pytz
 import sentry_sdk
 from aiohttp import web
-from telethon import events, functions, types, utils
+from telethon import errors, events, functions, types, utils
 from telethon.extensions.html import HTMLToTelegramParser
+
+from ..chats import chat_ids as read_chat_ids
+from ..telemetry import Rejection, Telemetry
 
 # Set on the session every trigger: a config default model loses its #variant and, when unavailable (no ChatGPT
 # login yet), silently falls back to any available model, even a free one. A session model fails the turn instead.
@@ -27,12 +31,16 @@ TAGS = {"b", "i", "u", "s", "code", "pre", "blockquote"}  # the Telegram HTML th
 URL = re.compile(r"https?://[^\s/?#\[\]]+\S*")  # urlparse raises on some model-written URLs ("https://[x")
 MAX_TRIGGER_AGE = timedelta(hours=6)  # an older tag cannot be answered; answers took at most 7 minutes in production
 
-Send = Callable[[int, str, int], Awaitable[None]]  # (chat_id, Telegram HTML, reply_to message_id)
+Send = Callable[[int, str, int], Awaitable[str]]  # (chat_id, Telegram HTML, reply_to message_id) -> "sent" or "silent"
 Lookup = Callable[[str, int], Awaitable["Trigger | None"]]  # (opencode session, message_id) -> the tag, if it is one
 
 
 class Rejected(Exception):
-    """A tool call kbots refuses; the message goes back to the model as the tool result."""
+    """A tool call kbots refuses; the message goes back to the model as the tool result, and `reason` to the metrics."""
+
+    def __init__(self, reason: Rejection, message: str):
+        super().__init__(message)
+        self.reason = reason
 
 
 class Trigger(NamedTuple):
@@ -174,24 +182,26 @@ def validate_reply(payload: dict) -> tuple[str, list[tuple[str, list[str]]]]:
     """Limits and source rules: the plugin's input schema already guarantees the types."""
     verdict = " ".join(payload.get("verdict", "").split()).rstrip(":")
     if len(verdict) > MAX_VERDICT:
-        raise Rejected(f"`verdict` has {len(verdict)} characters; keep it a short label of at most {MAX_VERDICT}.")
+        raise Rejected("shape", f"`verdict` has {len(verdict)} characters; keep it a short label of at most {MAX_VERDICT}.")
     if not 1 <= len(payload["points"]) <= MAX_POINTS:
-        raise Rejected(f"`points` must hold 1 to {MAX_POINTS} items.")
+        raise Rejected("shape", f"`points` must hold 1 to {MAX_POINTS} items.")
     points = []
     for i, item in enumerate(payload["points"], 1):
         text, sources = MARKERS.sub("", item["text"].strip()), item["sources"]  # keep the model's line breaks and spacing
         if not text or len(text) > MAX_CHARS:
-            raise Rejected(f"Point {i} has {len(text)} characters; it must have 1 to {MAX_CHARS}. Shorten it.")
+            raise Rejected("too_long", f"Point {i} has {len(text)} characters; it must have 1 to {MAX_CHARS}. Shorten it.")
         if "://" in html.unescape(text):  # unescaped, else "&#104;ttp://" slips a link past
-            raise Rejected(f"Point {i} contains a URL. Move it to `sources`.")
+            raise Rejected("format", f"Point {i} contains a URL. Move it to `sources`.")
         if error := html_error(text):
-            raise Rejected(f"Point {i} {error}.")
+            raise Rejected("format", f"Point {i} {error}.")
         if len(sources) > MAX_SOURCES:
-            raise Rejected(f"Point {i} must have at most {MAX_SOURCES} sources.")
+            raise Rejected("sources", f"Point {i} must have at most {MAX_SOURCES} sources.")
         if bad := [url for url in sources if not URL.fullmatch(url)]:
-            raise Rejected(f"Point {i} source {bad[0]!r} is not an http(s) URL.")
+            raise Rejected("sources", f"Point {i} source {bad[0]!r} is not an http(s) URL.")
         if gn := [url for url in sources if "news.google.com/" in url]:
-            raise Rejected(f"Point {i} cites a Google News link ({gn[0][:60]}...): cite the publisher's article you read instead.")
+            raise Rejected(
+                "sources", f"Point {i} cites a Google News link ({gn[0][:60]}...): cite the publisher's article you read instead."
+            )
         points.append((text, sources))
     return verdict, points
 
@@ -200,10 +210,11 @@ class Actions:
     """The tool calls the opencode plugin forwards (pes/opencode/plugin/kbots). Each call is checked against Telegram
     through `lookup`, never against a record of what was forwarded, so a restart of either side loses no trigger."""
 
-    def __init__(self, lookup: Lookup, send: Send, logger):
+    def __init__(self, lookup: Lookup, send: Send, logger, telemetry: Telemetry):
         self.lookup = lookup
         self.send = send
         self.logger = logger
+        self.telemetry = telemetry
         # (session, message) of the triggers answered. A call marks its trigger before it awaits anything, so even
         # parallel calls answer it once. Memory only: a call repeated across a PES restart posts again.
         self.answered: cachetools.TTLCache[tuple[str, int], bool] = cachetools.TTLCache(4096, ttl=MAX_TRIGGER_AGE.total_seconds())
@@ -212,24 +223,28 @@ class Actions:
         text = render_reply(*validate_reply(payload))
         key = (sid, payload["trigger_message_id"])
         if key in self.answered:
-            raise Rejected(f"Trigger {key[1]} was already answered.")
+            raise Rejected("already_answered", f"Trigger {key[1]} was already answered.")
         self.answered[key] = True
         try:
             if (trigger := await self.lookup(*key)) is None:
                 hours = MAX_TRIGGER_AGE // timedelta(hours=1)
-                raise Rejected(f"{key[1]} is not a message_id from a <trigger> of the last {hours} hours in this chat.")
+                raise Rejected(
+                    "unknown_trigger", f"{key[1]} is not a message_id from a <trigger> of the last {hours} hours in this chat."
+                )
             if payload["reply_to"] not in trigger.reply_targets:
                 raise Rejected(
-                    f"`reply_to` {payload['reply_to']} is not a message_id this trigger showed you, or is the bot's own."
+                    "aimed_elsewhere",
+                    f"`reply_to` {payload['reply_to']} is not a message_id this trigger showed you, or is the bot's own.",
                 )
             try:
-                await self.send(trigger.chat_id, text, payload["reply_to"])
+                outcome = await self.send(trigger.chat_id, text, payload["reply_to"])
             except Exception as error:
-                raise Rejected(f"Telegram refused the reply: {error}") from error
+                raise Rejected("telegram_refused", f"Telegram refused the reply: {error}") from error
         except BaseException:
             self.answered.pop(key, None)  # nothing was posted: the model may retry
             raise
-        return "sent"
+        self.telemetry.replied(sid, key[1], outcome)
+        return "sent"  # in a silent chat too: the model's turn must go as it would live
 
     def app(self, token: str) -> web.Application:
         async def callback(request: web.Request) -> web.Response:
@@ -240,6 +255,7 @@ class Actions:
             try:
                 return web.Response(text=await self.reply(body["session_id"], body["input"]))
             except Rejected as error:
+                self.telemetry.rejected(body["session_id"], error.reason, str(error))
                 return web.Response(status=422, text=str(error))
 
         app = web.Application()
@@ -261,8 +277,8 @@ async def queue_prompt(opencode: aiohttp.ClientSession, sid: str, title: str, te
         pass
 
 
-async def init(client, logger, config, **context):
-    chat_ids = [int(c) for c in config.get("factcheck", "chat_ids", fallback="").replace(",", " ").split()]
+async def init(client, logger, config, storage, **context):
+    chat_ids = read_chat_ids(config, "factcheck", "chat_ids")
     if not chat_ids:
         logger.info("Fact-check disabled: no [factcheck] chat_ids configured.")
         return
@@ -274,6 +290,16 @@ async def init(client, logger, config, **context):
 
     me = await client.get_me()
     sessions = {session_id(c): c for c in chat_ids}
+    # Silent chats run the whole fact-check but never post or react, to try a chat before it goes live.
+    silent = set(read_chat_ids(config, "general", "silent_chat_ids"))
+    titles: dict[int, str] = {}
+    for chat_id in chat_ids:
+        try:
+            titles[chat_id] = utils.get_display_name(await client.get_entity(chat_id))
+        except (ValueError, errors.RPCError):  # not a member yet: the first tag there fills it in
+            logger.warning("Fact-check: cannot read the title of chat %s", chat_id)
+            titles[chat_id] = str(chat_id)
+    telemetry = Telemetry(logger, titles, list(silent), MAX_TRIGGER_AGE.total_seconds())
 
     def my_mentions(msg) -> list[str]:
         return [
@@ -313,11 +339,14 @@ async def init(client, logger, config, **context):
         shown = {m.id for m in await window(chat_id, msg) if m.sender_id != me.id}  # never answer under the bot's own message
         return Trigger(chat_id, frozenset(shown | {msg.id}))
 
-    async def send(chat_id: int, text: str, reply_to: int):
+    async def send(chat_id: int, text: str, reply_to: int) -> str:
+        if chat_id in silent:
+            return "silent"
         await client.send_message(chat_id, text, reply_to=reply_to, parse_mode="html", link_preview=False)
+        return "sent"
 
     # Callbacks first: if the port is taken, init fails before any tag can be forwarded.
-    actions = Actions(lookup, send, logger)
+    actions = Actions(lookup, send, logger, telemetry)
     runner = web.AppRunner(actions.app(callback_token))
     await runner.setup()
     host, port = config.get("factcheck", "callback_host"), config.getint("factcheck", "callback_port")
@@ -326,35 +355,46 @@ async def init(client, logger, config, **context):
     auth = {"Authorization": aiohttp.encode_basic_auth("opencode", config.get("factcheck", "opencode_password"))}
     opencode = aiohttp.ClientSession(base_url=config.get("factcheck", "opencode_url"), headers=auth, raise_for_status=True)
 
+    if metrics_port := config.get("factcheck", "metrics_port", fallback=""):  # getint raises on the sample's empty value
+        await telemetry.serve(config.get("factcheck", "metrics_host"), int(metrics_port))
+    storage["_factcheck_poll"] = asyncio.create_task(telemetry.poll(opencode))  # a reference, else the task can be collected
+
     @client.on(events.NewMessage(chats=chat_ids, func=lambda e: my_mentions(e.message)))
     async def on_tag(event):
         msg = event.message
-        shown = await window(event.chat_id, msg)
-        # Images of the checked message and its album, then the tagger's own screenshot; the rest stay placeholders.
-        replied = next((m for m in shown if m.id == msg.reply_to_msg_id), None)
-        album = [
-            m for m in shown if replied and (m.id == replied.id or (replied.grouped_id and m.grouped_id == replied.grouped_id))
-        ]
-        files = await attach_images([*album, msg], logger)
-        focus = msg.message
-        for text in my_mentions(msg):  # only the bot's own: "@bot is @borys right?" keeps @borys
-            focus = focus.replace(text, "")
-        chat = utils.get_display_name(await event.get_chat())
-        prompt = build_prompt(
-            now=datetime.now(tz),
-            chat=f"{chat} (id {event.chat_id})",
-            sender=describe(await event.get_sender()),
-            message_id=msg.id,
-            replied_id=msg.reply_to_msg_id,
-            focus=focus,
-            window=[ChatMessage.from_telethon(m, own=m.sender_id == me.id) for m in shown],
-            attachments=[f["name"] for f in files],
-        )
+        telemetry.tagged(event.chat_id, msg.id)
+        try:  # any failure here leaves the tag unanswered, so the feed must name it
+            shown = await window(event.chat_id, msg)
+            # Images of the checked message and its album, then the tagger's own screenshot; the rest stay placeholders.
+            replied = next((m for m in shown if m.id == msg.reply_to_msg_id), None)
+            album = [
+                m for m in shown if replied and (m.id == replied.id or (replied.grouped_id and m.grouped_id == replied.grouped_id))
+            ]
+            files = await attach_images([*album, msg], logger)
+            focus = msg.message
+            for text in my_mentions(msg):  # only the bot's own: "@bot is @borys right?" keeps @borys
+                focus = focus.replace(text, "")
+            chat = utils.get_display_name(await event.get_chat())
+            telemetry.title(event.chat_id, chat)
+            prompt = build_prompt(
+                now=datetime.now(tz),
+                chat=f"{chat} (id {event.chat_id})",
+                sender=describe(await event.get_sender()),
+                message_id=msg.id,
+                replied_id=msg.reply_to_msg_id,
+                focus=focus,
+                window=[ChatMessage.from_telethon(m, own=m.sender_id == me.id) for m in shown],
+                attachments=[f["name"] for f in files],
+            )
 
-        sid = session_id(event.chat_id)
-        sentry_sdk.add_breadcrumb(category="factcheck", message=f"Forwarding trigger {msg.id} to {sid}")
-        await queue_prompt(opencode, sid, f"Telegram: {chat}", prompt, files)
+            sid = session_id(event.chat_id)
+            sentry_sdk.add_breadcrumb(category="factcheck", message=f"Forwarding trigger {msg.id} to {sid}")
+            await queue_prompt(opencode, sid, f"Telegram: {chat}", prompt, files)
+        except Exception as error:
+            telemetry.problem(str(event.chat_id), "forward_failed", f"{type(error).__name__}: {error}")
+            raise
 
-        await react(event.chat_id, msg.id, "👀")
+        if event.chat_id not in silent:
+            await react(event.chat_id, msg.id, "👀")
 
-    logger.info("Fact-check enabled for %s; callbacks on %s:%s", chat_ids, host, port)
+    logger.info("Fact-check enabled for %s (silent: %s); callbacks on %s:%s", chat_ids, sorted(silent), host, port)

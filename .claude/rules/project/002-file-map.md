@@ -20,6 +20,8 @@ When adding, removing, or renaming files, update this map in the same staged cha
 | `llm.py` | `parse_messages()` with OpenAI structured output. Models: `Item` and `Vehicles`. |
 | `prompts.py` | LLM prompt templates for equipment extraction. |
 | `gsheets.py` | Google Sheets integration for LLM reference data and vehicle type enum values. |
+| `chats.py` | `chat_ids()`: a config value's chat IDs, as the list Telethon's `chats=` filter needs. |
+| `telemetry.py` | Fact-check metrics for Prometheus and `factcheck-problem` lines: the bot's own counts plus the sidecar's, polled from its plugin. |
 | `template.py` | Jinja2 HTML template string for rendered losses tables. |
 
 ## PES Modules: `pes/src/tmodules/`
@@ -40,6 +42,7 @@ When adding, removing, or renaming files, update this map in the same staged cha
 | `pes/opencode/opencode.jsonc` | Sidecar opencode config: default agent, permission lockdown, websearch. |
 | `pes/opencode/agent/factcheck.md` | Agent system prompt: rules, fact-check procedure, answer format, abuse policy. |
 | `pes/opencode/plugin/kbots/server.ts` | `kbots_reply` tool that calls back into the bot and is forced until every trigger has a call, the guarded codemode `download`, the Jina `webfetch` fallback, the keyless web search rotation, and the request hook that adds ChatGPT's hosted `web_search`. |
+| `pes/opencode/plugin/kbots/telemetry.ts` | Per-session counts from opencode's events, the latest problems and the ChatGPT plan's windows, served over the `kbots.telemetry` RPC. |
 | `pes/evals/factcheck.py` | Live behavior evals against the real sidecar with a fake Telegram. |
 
 ## Admin Bot: `admin/src/`

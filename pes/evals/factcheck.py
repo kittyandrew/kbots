@@ -27,7 +27,8 @@ from typing import Literal
 import aiohttp
 import pytz
 from aiohttp import web
-from vtraty_pes_bot.tmodules.factcheck import Actions, ChatMessage, Trigger, build_prompt, queue_prompt
+from vtraty_pes_bot.telemetry import Telemetry
+from vtraty_pes_bot.tmodules.factcheck import MAX_TRIGGER_AGE, Actions, ChatMessage, Trigger, build_prompt, queue_prompt
 
 TZ = pytz.timezone("Europe/Kyiv")
 NOW = datetime.now(TZ)
@@ -345,8 +346,9 @@ async def main(args):
 
     sent: dict[int, list[tuple[int, str]]] = {}  # chat -> (reply_to, text) in posting order
 
-    async def send(chat_id: int, text: str, reply_to: int):
+    async def send(chat_id: int, text: str, reply_to: int) -> str:
         sent[chat_id].append((reply_to, text))
+        return "sent"
 
     calls: dict[tuple[str, int], list[tuple[int, str]]] = {}  # (session, trigger) -> (HTTP status, answer)
 
@@ -363,7 +365,8 @@ async def main(args):
     async def lookup(sid: str, message_id: int) -> Trigger | None:
         return triggers.get((sid, message_id))
 
-    actions = Actions(lookup, send, logging.getLogger("eval"))
+    logger = logging.getLogger("eval")
+    actions = Actions(lookup, send, logger, Telemetry(logger, {}, [], MAX_TRIGGER_AGE.total_seconds()))
     app = actions.app(token)
     app.middlewares.append(record)
     runner = web.AppRunner(app)

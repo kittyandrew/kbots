@@ -36,6 +36,22 @@ The sidecar reads text any chat member writes, so assume injection sometimes suc
 - **Deployment must block private address ranges.** `webfetch` and `download` fetch any URL, `127.0.0.1` included. The sidecar may reach the PES bot and the public internet, nothing else; on tustan that includes the factory opencode at `10.0.0.2:4096`.
 - Run it like the bot images: non-root, read-only root, only the state volume writable.
 
+## Monitoring
+
+kbots serves Prometheus metrics at `/metrics` when `[factcheck] metrics_port` is set (`pes/src/telemetry.py`). Labels carry chat IDs, tool names as the model calls them and fixed names; `kbots_factcheck_chat_info` maps each chat to its Telegram title.
+
+- **Counted by kbots:** tags, reply calls by outcome (sent, silent or the rejection reason) and the time from a tag to its answer. Each scrape also computes the oldest unanswered tag.
+- **Counted by the plugin** (`pes/opencode/plugin/kbots/telemetry.ts`) from opencode's event stream, per chat: turns, model steps, tokens, tool calls, retries and compactions. It also counts keyless searches and Jina reads, and reads the ChatGPT plan's windows every 5 minutes, as the Codex CLI does.
+- **The relay:** kbots polls the plugin's `kbots.telemetry` RPC every 15 s over the sidecar's API, so Prometheus never reaches the sidecar. A restarted sidecar counts from zero again, which Prometheus reads as a counter reset.
+
+Each problem is logged once at WARNING as `factcheck-problem {"chat", "title", "kind", "message"}`; a log feed lists these lines and counts them, which a restart cannot skew. The message is an error text, or the text kbots sent back to the model; never chat or answer text.
+
+- **From kbots:** `reply_rejected` (the reason, then the text) and `forward_failed`.
+- **From the plugin:** `turn_failed`, `turn_interrupted`, `step_failed`, `content_filter`, `retry`, `tool_failed`, `plan_unavailable` and `telemetry` (its event stream broke). `turn_failed`, `step_failed` and `content_filter` also go to Sentry.
+- **Gaps:** the plugin keeps its last 200 problems, and kbots logs only those raised after its own start, comparing the two clocks of one host. Problems from while kbots was down are lost.
+
+`[general] silent_chat_ids` lists chats where the bot reads but never posts: the downloader and `/table` ignore them. A fact-check chat that is also silent runs the whole turn, and kbots checks the reply but neither posts it nor reacts to the tag. Use it to try a chat before it goes live. The model believes its silent replies were posted, so delete the chat's session (`DELETE /api/session/ses_tg_<chat>`) before going live.
+
 ## Evals
 
 `pes/evals/factcheck.py` runs the real sidecar and kbots validation against a fake Telegram, on the ChatGPT login in `data/opencode`. It costs plan usage and is nondeterministic, so it is not a CI gate; run it after changing the prompt, plugin or model. Each eval failure so far traced to a prompt rule, not code.
@@ -49,5 +65,4 @@ The sidecar reads text any chat member writes, so assume injection sometimes suc
 - Compaction rewrites the session as a summary whose "Requirements" (opencode's fixed template) restate the prompt's rules in the model's words and keep members' requests as standing requirements. Rare wrong-language answers in production followed compactions; local replays did not reproduce them.
 - Context is fetched by message id, which spans minutes in a busy group but can reach back months in a quiet DM. In a forum chat, a bare tag's reply target is its topic's first message.
 - If OpenAI stops accepting the hosted `web_search` (a model or plan change), every turn fails, and the `websearch` fallback never runs; the evals catch it.
-- Turn failures surface only in the sidecar's stderr, not in kbots or Sentry.
 - A personal ChatGPT subscription behind a public bot may conflict with OpenAI's terms.

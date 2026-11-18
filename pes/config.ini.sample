@@ -8,6 +8,8 @@ target_text =  # @Required: Text identifier for the target channel.
 timezone = Europe/Kyiv  # Timezone for scheduling and date calculations.
 logo = data/logo.png  # Path to watermark logo image.
 logo_users =  # @Required: Comma-separated Telegram user IDs allowed to use /watermark.
+# @Optional: comma-separated chat IDs where the bot reads but never posts: no downloads, /table or fact-check replies.
+silent_chat_ids =
 
 # Table generation settings
 table_cache_fp = data/table_cache.json  # Path to the JSON cache file for parsed equipment data.
@@ -38,3 +40,6 @@ callback_host = 127.0.0.1
 callback_port = 8765
 # At least 32 characters; must equal the sidecar's KBOTS_CALLBACK_TOKEN.
 callback_token =
+# @Optional: serves the fact-check metrics at /metrics for Prometheus (docs/factcheck.md, Monitoring); empty disables it.
+metrics_host = 127.0.0.1
+metrics_port =
