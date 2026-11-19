@@ -17,7 +17,6 @@ from telethon import Button, TelegramClient, events
 from telethon.errors import MessageNotModifiedError
 from telethon.tl.types import ChannelParticipantsAdmins, InputMessagesFilterPinned
 
-from ..chats import chat_ids
 from ..gsheets import get_gsheet_prompt, get_vehicle_types
 from ..llm import Item, parse_messages
 from ..template import template as table_html_template
@@ -369,13 +368,7 @@ async def init(client: TelegramClient, logger, storage, **context):
 
     storage["_scheduled_task"].add_done_callback(_on_task_done)
 
-    silent = chat_ids(storage["config"], "general", "silent_chat_ids")
-
-    @client.on(
-        events.NewMessage(
-            chats=silent, blacklist_chats=True, pattern="^/table ?(new)?$", func=lambda e: not (e.is_channel and not e.is_group)
-        )
-    )
+    @client.on(events.NewMessage(pattern="^/table ?(new)?$", func=lambda e: not (e.is_channel and not e.is_group)))
     async def table_generation_handler(event):
         await event.delete()
         force_new = bool(event.pattern_match.group(1))

@@ -20,7 +20,6 @@ When adding, removing, or renaming files, update this map in the same staged cha
 | `llm.py` | `parse_messages()` with OpenAI structured output. Models: `Item` and `Vehicles`. |
 | `prompts.py` | LLM prompt templates for equipment extraction. |
 | `gsheets.py` | Google Sheets integration for LLM reference data and vehicle type enum values. |
-| `chats.py` | `chat_ids()`: a config value's chat IDs, as the list Telethon's `chats=` filter needs. |
 | `telemetry.py` | Fact-check metrics for Prometheus and `factcheck-problem` lines: the bot's own counts plus the sidecar's, polled from its plugin. |
 | `template.py` | Jinja2 HTML template string for rendered losses tables. |
 

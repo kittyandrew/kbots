@@ -40,7 +40,7 @@ The sidecar reads text any chat member writes, so assume injection sometimes suc
 
 kbots serves Prometheus metrics at `/metrics` when `[factcheck] metrics_port` is set (`pes/src/telemetry.py`). Labels carry chat IDs, tool names as the model calls them and fixed names; `kbots_factcheck_chat_info` maps each chat to its Telegram title.
 
-- **Counted by kbots:** tags, reply calls by outcome (sent, silent or the rejection reason) and the time from a tag to its answer. Each scrape also computes the oldest unanswered tag.
+- **Counted by kbots:** tags, reply calls by outcome (sent or the rejection reason) and the time from a tag to its answer. Each scrape also computes the oldest unanswered tag.
 - **Counted by the plugin** (`pes/opencode/plugin/kbots/telemetry.ts`) from opencode's event stream, per chat: turns, model steps, tokens, tool calls, retries and compactions. It also counts keyless searches and Jina reads, and reads the ChatGPT plan's windows every 5 minutes, as the Codex CLI does.
 - **The relay:** kbots polls the plugin's `kbots.telemetry` RPC every 15 s over the sidecar's API, so Prometheus never reaches the sidecar. A restarted sidecar counts from zero again, which Prometheus reads as a counter reset.
 
@@ -49,8 +49,6 @@ Each problem is logged once at WARNING as `factcheck-problem {"chat", "title", "
 - **From kbots:** `reply_rejected` (the reason, then the text) and `forward_failed`.
 - **From the plugin:** `turn_failed`, `turn_interrupted`, `step_failed`, `content_filter`, `retry`, `tool_failed`, `plan_unavailable` and `telemetry` (its event stream broke). `turn_failed`, `step_failed` and `content_filter` also go to Sentry.
 - **Gaps:** the plugin keeps its last 200 problems, and kbots logs only those raised after its own start, comparing the two clocks of one host. Problems from while kbots was down are lost.
-
-`[general] silent_chat_ids` lists chats where the bot reads but never posts: the downloader and `/table` ignore them. A fact-check chat that is also silent runs the whole turn, and kbots checks the reply but neither posts it nor reacts to the tag. Use it to try a chat before it goes live. The model believes its silent replies were posted, so delete the chat's session (`DELETE /api/session/ses_tg_<chat>`) before going live.
 
 ## Evals
 

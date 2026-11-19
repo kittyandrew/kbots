@@ -16,7 +16,6 @@ from aiohttp import web
 from telethon import errors, events, functions, types, utils
 from telethon.extensions.html import HTMLToTelegramParser
 
-from ..chats import chat_ids as read_chat_ids
 from ..telemetry import Rejection, Telemetry
 
 # Set on the session every trigger: a config default model loses its #variant and, when unavailable (no ChatGPT
@@ -31,7 +30,7 @@ TAGS = {"b", "i", "u", "s", "code", "pre", "blockquote"}  # the Telegram HTML th
 URL = re.compile(r"https?://[^\s/?#\[\]]+\S*")  # urlparse raises on some model-written URLs ("https://[x")
 MAX_TRIGGER_AGE = timedelta(hours=6)  # an older tag cannot be answered; answers took at most 7 minutes in production
 
-Send = Callable[[int, str, int], Awaitable[str]]  # (chat_id, Telegram HTML, reply_to message_id) -> "sent" or "silent"
+Send = Callable[[int, str, int], Awaitable[None]]  # (chat_id, Telegram HTML, reply_to message_id)
 Lookup = Callable[[str, int], Awaitable["Trigger | None"]]  # (opencode session, message_id) -> the tag, if it is one
 
 
@@ -237,14 +236,14 @@ class Actions:
                     f"`reply_to` {payload['reply_to']} is not a message_id this trigger showed you, or is the bot's own.",
                 )
             try:
-                outcome = await self.send(trigger.chat_id, text, payload["reply_to"])
+                await self.send(trigger.chat_id, text, payload["reply_to"])
             except Exception as error:
                 raise Rejected("telegram_refused", f"Telegram refused the reply: {error}") from error
         except BaseException:
             self.answered.pop(key, None)  # nothing was posted: the model may retry
             raise
-        self.telemetry.replied(sid, key[1], outcome)
-        return "sent"  # in a silent chat too: the model's turn must go as it would live
+        self.telemetry.replied(sid, key[1])
+        return "sent"
 
     def app(self, token: str) -> web.Application:
         async def callback(request: web.Request) -> web.Response:
@@ -278,7 +277,7 @@ async def queue_prompt(opencode: aiohttp.ClientSession, sid: str, title: str, te
 
 
 async def init(client, logger, config, storage, **context):
-    chat_ids = read_chat_ids(config, "factcheck", "chat_ids")
+    chat_ids = [int(c) for c in config.get("factcheck", "chat_ids", fallback="").replace(",", " ").split()]
     if not chat_ids:
         logger.info("Fact-check disabled: no [factcheck] chat_ids configured.")
         return
@@ -290,8 +289,6 @@ async def init(client, logger, config, storage, **context):
 
     me = await client.get_me()
     sessions = {session_id(c): c for c in chat_ids}
-    # Silent chats run the whole fact-check but never post or react, to try a chat before it goes live.
-    silent = set(read_chat_ids(config, "general", "silent_chat_ids"))
     titles: dict[int, str] = {}
     for chat_id in chat_ids:
         try:
@@ -299,7 +296,7 @@ async def init(client, logger, config, storage, **context):
         except (ValueError, errors.RPCError):  # not a member yet: the first tag there fills it in
             logger.warning("Fact-check: cannot read the title of chat %s", chat_id)
             titles[chat_id] = str(chat_id)
-    telemetry = Telemetry(logger, titles, list(silent), MAX_TRIGGER_AGE.total_seconds())
+    telemetry = Telemetry(logger, titles, MAX_TRIGGER_AGE.total_seconds())
 
     def my_mentions(msg) -> list[str]:
         return [
@@ -339,11 +336,8 @@ async def init(client, logger, config, storage, **context):
         shown = {m.id for m in await window(chat_id, msg) if m.sender_id != me.id}  # never answer under the bot's own message
         return Trigger(chat_id, frozenset(shown | {msg.id}))
 
-    async def send(chat_id: int, text: str, reply_to: int) -> str:
-        if chat_id in silent:
-            return "silent"
+    async def send(chat_id: int, text: str, reply_to: int):
         await client.send_message(chat_id, text, reply_to=reply_to, parse_mode="html", link_preview=False)
-        return "sent"
 
     # Callbacks first: if the port is taken, init fails before any tag can be forwarded.
     actions = Actions(lookup, send, logger, telemetry)
@@ -394,7 +388,6 @@ async def init(client, logger, config, storage, **context):
             telemetry.problem(str(event.chat_id), "forward_failed", f"{type(error).__name__}: {error}")
             raise
 
-        if event.chat_id not in silent:
-            await react(event.chat_id, msg.id, "👀")
+        await react(event.chat_id, msg.id, "👀")
 
-    logger.info("Fact-check enabled for %s (silent: %s); callbacks on %s:%s", chat_ids, sorted(silent), host, port)
+    logger.info("Fact-check enabled for %s; callbacks on %s:%s", chat_ids, host, port)

@@ -32,16 +32,15 @@ def window_name(seconds: int) -> str:
 
 
 class Telemetry:
-    def __init__(self, logger, titles: dict[int, str], silent: list[int], expire_after: float):
+    def __init__(self, logger, titles: dict[int, str], expire_after: float):
         self.logger = logger
         self.titles = {str(chat): title for chat, title in titles.items()}  # refreshed on every tag
-        self.silent = {str(chat) for chat in silent}
         self.expire_after = expire_after  # a tag this old can no longer be answered
         self.registry = registry = CollectorRegistry()
         self.tags = Counter("kbots_factcheck_tags", "Tags of the bot in a fact-check chat.", ["chat"], registry=registry)
         self.replies = Counter(
             "kbots_factcheck_replies",
-            "The agent's reply calls: sent, silent (accepted in a silent chat, never posted) or why kbots rejected one.",
+            "The agent's reply calls: sent, or why kbots rejected one.",
             ["chat", "outcome"],
             registry=registry,
         )
@@ -56,7 +55,7 @@ class Telemetry:
         for chat in self.titles:  # at 0 before the first event: increase() takes a new series' first value as its start
             self.tags.labels(chat)
             self.answers.labels(chat)
-            for outcome in ("silent" if chat in self.silent else "sent", *get_args(Rejection)):
+            for outcome in ("sent", *get_args(Rejection)):
                 self.replies.labels(chat, outcome)
         self.pending: dict[tuple[str, int], float] = {}  # (chat, tag message ID) -> when the tag arrived
         self.snapshot: dict | None = None
@@ -71,9 +70,9 @@ class Telemetry:
         self.tags.labels(str(chat_id)).inc()
         self.pending[(str(chat_id), message_id)] = time.time()
 
-    def replied(self, session: str, message_id: int, outcome: str):
+    def replied(self, session: str, message_id: int):
         chat = chat_of(session)
-        self.replies.labels(chat, outcome).inc()
+        self.replies.labels(chat, "sent").inc()
         if (arrived := self.pending.pop((chat, message_id), None)) is not None:
             self.answers.labels(chat).observe(time.time() - arrived)
 
@@ -128,16 +127,14 @@ class Telemetry:
     def collect(self) -> Iterator[Metric]:
         now = time.time()
         self.pending = {key: arrived for key, arrived in self.pending.items() if now - arrived < self.expire_after}
-        info = GaugeMetricFamily(
-            "kbots_factcheck_chat_info", "Each fact-check chat's Telegram title and mode.", labels=["chat", "title", "mode"]
-        )
+        info = GaugeMetricFamily("kbots_factcheck_chat_info", "Each fact-check chat's Telegram title.", labels=["chat", "title"])
         oldest = GaugeMetricFamily(
             "kbots_factcheck_oldest_unanswered_seconds",
             "Age of the oldest tag still without an answer, 0 when none.",
             labels=["chat"],
         )
         for chat, title in self.titles.items():
-            info.add_metric([chat, title, "silent" if chat in self.silent else "live"], 1)
+            info.add_metric([chat, title], 1)
             oldest.add_metric([chat], max((now - arrived for (c, _), arrived in self.pending.items() if c == chat), default=0))
         yield info
         yield oldest

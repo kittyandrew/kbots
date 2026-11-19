@@ -346,9 +346,8 @@ async def main(args):
 
     sent: dict[int, list[tuple[int, str]]] = {}  # chat -> (reply_to, text) in posting order
 
-    async def send(chat_id: int, text: str, reply_to: int) -> str:
+    async def send(chat_id: int, text: str, reply_to: int):
         sent[chat_id].append((reply_to, text))
-        return "sent"
 
     calls: dict[tuple[str, int], list[tuple[int, str]]] = {}  # (session, trigger) -> (HTTP status, answer)
 
@@ -366,7 +365,7 @@ async def main(args):
         return triggers.get((sid, message_id))
 
     logger = logging.getLogger("eval")
-    actions = Actions(lookup, send, logger, Telemetry(logger, {}, [], MAX_TRIGGER_AGE.total_seconds()))
+    actions = Actions(lookup, send, logger, Telemetry(logger, {}, MAX_TRIGGER_AGE.total_seconds()))
     app = actions.app(token)
     app.middlewares.append(record)
     runner = web.AppRunner(app)

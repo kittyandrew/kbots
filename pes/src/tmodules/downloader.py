@@ -19,8 +19,6 @@ from telethon.extensions import html as telegram_html
 from telethon.tl.types import DocumentAttributeVideo, MessageEntityUrl, MessageMediaWebPage
 from yt_dlp.utils import traverse_obj
 
-from ..chats import chat_ids
-
 MATCH_RULES: dict[str, tuple[list[str], Callable[[str], bool]]] = {
     "instagram": (["instagram.com", "facebook.com"], lambda p: "/reel/" in p),
     "facebook": (["facebook.com"], lambda p: "/share/v/" in p),
@@ -174,13 +172,8 @@ def video_attributes(path: Path, info: dict, logger) -> list[DocumentAttributeVi
 
 async def init(client, logger, config, **context):
     logger.info("Initiating shortform video downloader ...")
-    silent = chat_ids(config, "general", "silent_chat_ids")
 
-    @client.on(
-        events.NewMessage(
-            chats=silent, blacklist_chats=True, func=lambda e: e.text and e.entities and not (e.is_channel and not e.is_group)
-        )
-    )
+    @client.on(events.NewMessage(func=lambda e: e.text and e.entities and not (e.is_channel and not e.is_group)))
     async def shortform_video_downloader(event):
         preview = isinstance(event.media, MessageMediaWebPage)
         if event.media and not preview:  # Attachment links are attribution; bare links with previews still need downloading.
